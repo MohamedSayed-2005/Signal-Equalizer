@@ -1,0 +1,88 @@
+{
+  "description": "ECG Abnormalities Mode - Each slider controls the magnitude of a specific arrhythmia component",
+  "mode": "ecg_abnormalities",
+  "sliders": [
+    {
+      "color": "#26de81",
+      "default_gain": 1,
+      "description": "Normal heart rhythm components (P-wave, QRS complex, T-wave)",
+      "name": "Normal Sinus Rhythm",
+      "ranges": [
+        [
+          0.5,
+          5
+        ],
+        [
+          5,
+          15
+        ],
+        [
+          15,
+          40
+        ]
+      ],
+      "current_gain": 0.89
+    },
+    {
+      "color": "#ff6b6b",
+      "default_gain": 1,
+      "description": "Irregular atrial activity replacing P-waves with fibrillatory waves",
+      "name": "Atrial Fibrillation",
+      "ranges": [
+        [
+          4,
+          9
+        ],
+        [
+          150,
+          250
+        ],
+        [
+          300,
+          500
+        ]
+      ],
+      "current_gain": 2
+    },
+    {
+      "color": "#ffc107",
+      "default_gain": 1,
+      "description": "Wide QRS complexes with rapid ventricular rate",
+      "name": "Ventricular Tachycardia",
+      "ranges": [
+        [
+          40,
+          100
+        ],
+        [
+          100,
+          250
+        ]
+      ],
+      "current_gain": 1
+    },
+    {
+      "color": "#a55eea",
+      "default_gain": 1,
+      "description": "Abnormally slow heart rate components",
+      "name": "Bradycardia",
+      "ranges": [
+        [
+          0.1,
+          0.5
+        ],
+        [
+          0.5,
+          2
+        ]
+      ],
+      "current_gain": 0.11
+    }
+  ],
+  "wavelet_recommendations": {
+    "coif3": "Coiflet-3 - good for detecting P and T waves",
+    "db4": "Daubechies-4 - good for detecting QRS complexes",
+    "fourier": "Standard FFT - good general-purpose frequency analysis",
+    "sym5": "Symlet-5 - symmetric, good for ECG morphology analysis"
+  }
+}
