@@ -48,11 +48,57 @@ try:
 except ImportError:
     HAS_DEMUCS = False
 
+# ---- AI Model Imports (Animals / AudioSep) ----
+# AudioSep repo lives at: D:\elmozakra\VS code\Microsoft VS Code\AudioSep
+# pipeline.py inside that repo exposes build_audiosep + inference helpers.
+AUDIOSEP_REPO_DIR = r'D:\elmozakra\VS code\Microsoft VS Code\AudioSep'
+# Checkpoint files (download once from HuggingFace – see notes in separate_animal_stems)
+AUDIOSEP_CKPT   = os.path.join(AUDIOSEP_REPO_DIR, 'checkpoint',
+                                'audiosep_base_4M_steps.ckpt')
+AUDIOSEP_CONFIG = os.path.join(AUDIOSEP_REPO_DIR, 'config',
+                                'audiosep_base.yaml')
+
+import sys as _sys
+if AUDIOSEP_REPO_DIR not in _sys.path:
+    _sys.path.insert(0, AUDIOSEP_REPO_DIR)
+
+# pipeline.py uses relative paths like 'checkpoint/...' so we must
+# temporarily change the working directory to the repo before importing.
+_orig_cwd = os.getcwd()
+try:
+    os.chdir(AUDIOSEP_REPO_DIR)
+    # PyTorch 2.6 changed torch.load default to weights_only=True which breaks
+    # the AudioSep checkpoints. Patch torch.load to force weights_only=False.
+    import torch as _torch
+    _orig_torch_load = _torch.load
+    def _patched_torch_load(f, map_location=None, pickle_module=None, **kwargs):
+        kwargs['weights_only'] = False
+        return _orig_torch_load(f, map_location=map_location, **kwargs)
+    _torch.load = _patched_torch_load
+
+    # Patch torch.nn.Module.load_state_dict to use strict=False so that
+    # minor checkpoint/model mismatches (e.g. position_ids key) are ignored.
+    import torch.nn as _nn
+    _orig_load_state_dict = _nn.Module.load_state_dict
+    def _patched_load_state_dict(self, state_dict, strict=True, **kwargs):
+        return _orig_load_state_dict(self, state_dict, strict=False, **kwargs)
+    _nn.Module.load_state_dict = _patched_load_state_dict
+
+    from pipeline import build_audiosep, separate_audio as _audiosep_raw_inference
+    HAS_AUDIOSEP = True
+except Exception as _audiosep_import_err:
+    HAS_AUDIOSEP = False
+    print(f'[AudioSep] Import failed: {_audiosep_import_err}')
+finally:
+    _torch.load = _orig_torch_load
+    _nn.Module.load_state_dict = _orig_load_state_dict
+    os.chdir(_orig_cwd)
 app = Flask(__name__)
 store = {
     'ecg': {},
     'music': {},
     'voices': {},
+    'animals': {},
     'generic': {}
 }
 
@@ -61,10 +107,11 @@ OPTIMAL_WAVELET = {
     'ecg':    'sym5',   
     'music':  'db4',    
     'voices': 'haar',
+    'animals': 'coif3',
     'generic': 'db4'
 }
 
-# ── AI Model Definition ───────────────────────────────────────────────────────
+# ── AI Model Definition (ECG) ─────────────────────────────────────────────────
 def build_fcn_dae():
     inputs = Input(shape=(None, 1))
     
@@ -81,6 +128,291 @@ def build_fcn_dae():
 
     return Model(inputs, decoded)
 
+
+# ---- AI Model Definition (Animals / AudioSep) ----
+# AudioSep separates sounds using natural-language text queries.
+# Requires: checkpoint/audiosep_base_4M_steps.ckpt (1.26 GB, download once).
+
+ANIMAL_STEMS       = ['dog', 'bird', 'cat', 'frog', 'other']
+ANIMAL_STEM_COLORS = ['#ff6d00', '#ffea00', '#00e5ff', '#00e676', '#ff4081']
+
+# Text queries sent to AudioSep for each animal stem
+AUDIOSEP_ANIMAL_QUERIES = {
+    'dog':  'dog barking and growling',
+    'bird': 'bird chirping and singing',
+    'cat':  'cat meowing and purring',
+    'frog': 'frog croaking',
+}
+
+# Use chunk inference for audio longer than this (seconds).
+# Chunk mode processes overlapping windows — better for long recordings.
+AUDIOSEP_CHUNK_THRESHOLD_SEC = 10
+
+# Post-processing: bandpass frequency ranges per animal (Hz).
+# Tightly matched to each animal's actual vocal range to minimise bleed.
+#   Dog  : bark fundamental 80–800 Hz, harmonics up to ~1200 Hz
+#   Bird : calls 1500 Hz and above (well above dog/frog range)
+#   Cat  : meow fundamental 700–1500 Hz, key harmonics up to 3000 Hz
+#   Frog : croak sits tightly in 200–900 Hz (below cat, above infra)
+ANIMAL_FREQ_RANGES = {
+    'dog':  (80,   1200),
+    'bird': (1500, 12000),
+    'cat':  (500,  8000),
+    'frog': (100,  4000),
+}
+
+# Per-animal spectral mask power — higher = harder mask.
+# Cat and frog need stronger masking because their ranges overlap more
+# with each other and with dog.
+SPECTRAL_MASK_POWER = {
+    'dog':  2.5,
+    'bird': 2.0,   # birds are usually well isolated; gentler is fine
+    'cat':  2.5,   # reduced from 4.0 to prevent watery sound
+    'frog': 2.5,   # reduced from 4.0 to prevent watery sound
+}
+
+
+def post_process_stem(stem_arr, mixture_arr, sr, animal):
+    """
+    Improve separation quality with three post-processing steps:
+    1. Bandpass filter — keeps only the animal's known frequency range.
+    2. Spectral soft-mask — suppresses bins where the stem is weaker
+       than the mixture (reduces bleed from other sources).
+    3. Peak normalisation — brings each stem to a consistent level.
+    """
+    from scipy.signal import butter, filtfilt
+
+    # ── 1. Bandpass ───────────────────────────────────────────────────────
+    lo, hi = ANIMAL_FREQ_RANGES.get(animal, (20, sr / 2 - 1))
+    nyq = sr / 2.0
+    lo_n = max(lo / nyq, 0.001)
+    hi_n = min(hi / nyq, 0.999)
+    b, a = butter(4, [lo_n, hi_n], btype='bandpass')
+    stem_filtered = filtfilt(b, a, stem_arr)
+
+    # ── 2. Spectral soft-mask ─────────────────────────────────────────────
+    n = len(stem_filtered)
+
+    # Use STFT for better frequency-domain masking
+    n_fft = 2048
+    hop_length = 512
+    _, _, stem_stft = scipy_signal.stft(stem_filtered, fs=sr, nperseg=n_fft, noverlap=n_fft-hop_length)
+    _, _, mix_stft  = scipy_signal.stft(mixture_arr[:n] if len(mixture_arr) >= n 
+                                       else np.pad(mixture_arr, (0, n - len(mixture_arr))), 
+                                       fs=sr, nperseg=n_fft, noverlap=n_fft-hop_length)
+    
+    stem_mag = np.abs(stem_stft)
+    mix_mag  = np.abs(mix_stft) + 1e-10
+    
+    # Per-animal Wiener-style soft mask
+    mask_power = SPECTRAL_MASK_POWER.get(animal, 2.5)
+    mask = (stem_mag / mix_mag) ** mask_power
+    mask = np.clip(mask, 0.0, 1.0)
+    
+    # Apply mask and invert STFT
+    _, stem_masked = scipy_signal.istft(stem_stft * mask, fs=sr, nperseg=n_fft, noverlap=n_fft-hop_length)
+    stem_masked = stem_masked[:n]
+
+    # ── 3. Normalise ──────────────────────────────────────────────────────
+    # Avoid extreme boosting of noise; cap the gain
+    orig_peak = np.max(np.abs(stem_filtered))
+    new_peak  = np.max(np.abs(stem_masked))
+    
+    if new_peak > 1e-6:
+        gain = min(orig_peak / new_peak, 2.0)
+        stem_out = stem_masked * gain
+    else:
+        stem_out = stem_masked
+
+    return stem_out.astype(np.float64)
+
+# Lazy-loaded AudioSep model (loaded once on first use)
+_audiosep_model = None
+
+
+def _ensure_audiosep_model():
+    """
+    Load the AudioSep model from the local repo on first call.
+    Requires:
+      checkpoint/audiosep_base_4M_steps.ckpt  (1.26 GB – place manually in checkpoint/)
+      config/audiosep_base.yaml               (already in the repo)
+    """
+    global _audiosep_model
+    if _audiosep_model is not None:
+        return _audiosep_model
+
+    if not HAS_AUDIOSEP:
+        raise RuntimeError(
+            "AudioSep pipeline not found.\n"
+            "Make sure the repo path is correct:\n"
+            f"  AUDIOSEP_REPO_DIR = {AUDIOSEP_REPO_DIR}\n"
+            "and that pipeline.py exists inside it."
+        )
+
+    if not os.path.exists(AUDIOSEP_CKPT):
+        raise RuntimeError(
+            f"AudioSep checkpoint not found.\n"
+            f"Please place audiosep_base_4M_steps.ckpt at:\n  {AUDIOSEP_CKPT}"
+        )
+
+    if not os.path.exists(AUDIOSEP_CONFIG):
+        raise RuntimeError(
+            f"AudioSep config not found at:\n  {AUDIOSEP_CONFIG}\n"
+            "This file should already be inside the repo under config/audiosep_base.yaml"
+        )
+
+    import torch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'[AudioSep] Loading model on {device} ...')
+    _orig_cwd = os.getcwd()
+    try:
+        os.chdir(AUDIOSEP_REPO_DIR)
+        # Ensure weights_only=False and strict=False patches are active when loading
+        import torch as _torch
+        import torch.nn as _nn
+        _orig_load = _torch.load
+        _orig_lsd  = _nn.Module.load_state_dict
+        def _patched_load(f, map_location=None, pickle_module=None, **kwargs):
+            kwargs['weights_only'] = False
+            return _orig_load(f, map_location=map_location, **kwargs)
+        def _patched_lsd(self, state_dict, strict=True, **kwargs):
+            return _orig_lsd(self, state_dict, strict=False, **kwargs)
+        _torch.load = _patched_load
+        _nn.Module.load_state_dict = _patched_lsd
+        try:
+            _audiosep_model = build_audiosep(
+                config_yaml=AUDIOSEP_CONFIG,
+                checkpoint_path=AUDIOSEP_CKPT,
+                device=device,
+            )
+        finally:
+            _torch.load = _orig_load
+            _nn.Module.load_state_dict = _orig_lsd
+    finally:
+        os.chdir(_orig_cwd)
+    print('[AudioSep] Model loaded.')
+    return _audiosep_model
+
+
+def separate_animal_stems(signal_arr, sr):
+    """
+    Use AudioSep to isolate each animal sound from the mixture.
+    AudioSep takes a text query (e.g. 'dog barking') and returns the
+    separated waveform for that sound class.
+    The model always works at 32 kHz internally; we resample in/out as needed.
+    """
+    import shutil
+    import torch
+    from scipy.signal import resample_poly
+    from math import gcd
+
+    model = _ensure_audiosep_model()
+    device = next(model.parameters()).device
+    n = len(signal_arr)
+
+    # Write input signal to a temp WAV at its original sample rate.
+    # AudioSep's pipeline.py uses librosa.load(..., sr=32000) internally,
+    # so it handles resampling itself.
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_in:
+        tmp_in_path = tmp_in.name
+    wav_data = (signal_arr / (np.max(np.abs(signal_arr)) + 1e-10) * 32767).astype(np.int16)
+    scipy_wavfile.write(tmp_in_path, int(sr), wav_data)
+
+    stems    = {}
+    combined = np.zeros(n)
+
+    try:
+        for animal, text_query in AUDIOSEP_ANIMAL_QUERIES.items():
+            # Iterative separation: feed the output back into the model 3 times
+            current_input_path = tmp_in_path
+            current_stem = None
+            
+            for i in range(10):
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_out:
+                    tmp_out_path = tmp_out.name
+
+                try:
+                    # AudioSep inference: reads current_input_path, separates by text_query,
+                    # writes result to tmp_out at 32 kHz.
+                    use_chunk = (n / sr) > AUDIOSEP_CHUNK_THRESHOLD_SEC
+                    _audiosep_raw_inference(
+                        model,
+                        current_input_path,
+                        text_query,
+                        tmp_out_path,
+                        device=device,
+                        use_chunk=use_chunk,
+                    )
+
+                    if os.path.exists(tmp_out_path):
+                        out_sr, out_data = scipy_wavfile.read(tmp_out_path)
+                        # Normalise to float64
+                        if out_data.dtype == np.int16:
+                            out_data = out_data.astype(np.float64) / 32768.0
+                        elif out_data.dtype == np.int32:
+                            out_data = out_data.astype(np.float64) / 2147483648.0
+                        else:
+                            out_data = out_data.astype(np.float64)
+                        if out_data.ndim > 1:
+                            out_data = out_data.mean(axis=1)
+                        
+                        # Resample from 32 kHz back to original sr if needed
+                        if out_sr != int(sr):
+                            g = gcd(out_sr, int(sr))
+                            out_data = resample_poly(
+                                out_data, int(sr) // g, out_sr // g
+                            ).astype(np.float64)
+                        
+                        # Trim / pad to match original length
+                        if len(out_data) >= n:
+                            out_data = out_data[:n]
+                        else:
+                            out_data = np.pad(out_data, (0, n - len(out_data)))
+                        
+                        current_stem = out_data.astype(np.float64)
+                        
+                        # Prepare for next iteration if not the last one
+                        if i < 2:
+                            # If this was a temp file from a previous iteration, delete it
+                            if current_input_path != tmp_in_path:
+                                try: os.unlink(current_input_path)
+                                except: pass
+                            
+                            # Write current output to a new temp file for the next pass
+                            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as next_in:
+                                current_input_path = next_in.name
+                            wav_data_iter = (current_stem / (np.max(np.abs(current_stem)) + 1e-10) * 32767).astype(np.int16)
+                            scipy_wavfile.write(current_input_path, int(sr), wav_data_iter)
+                    else:
+                        current_stem = np.zeros(n)
+                        break
+
+                finally:
+                    try: os.unlink(tmp_out_path)
+                    except: pass
+            
+            # Final stem after 3 iterations
+            stems[animal] = current_stem if current_stem is not None else np.zeros(n)
+            
+            # Clean up the iterative temp file if it was created
+            if current_input_path != tmp_in_path:
+                try: os.unlink(current_input_path)
+                except: pass
+
+            combined += stems[animal]
+
+        # 'other' = everything that wasn't attributed to a named animal
+        # Clip so it doesn't go negative from over-subtraction
+        other = signal_arr - combined
+        stems['other'] = np.clip(other, -1.0, 1.0)
+
+    finally:
+        try: os.unlink(tmp_in_path)
+        except: pass
+
+    return stems
+
+# ── AI Voice Separator (SpeechBrain) ──────────────────────────────────────────
 voice_separator_model = None
 
 def separate_and_label_voices(signal_arr, sr):
@@ -92,17 +424,12 @@ def separate_and_label_voices(signal_arr, sr):
         import shutil, pathlib
 
         # ── Windows fix: OSError 1314 (symlink privilege not held) ──────────
-        # SpeechBrain's fetcher calls Path.symlink_to() to link cached model
-        # files into the savedir.  On Windows this requires the rarely-granted
-        # "Create symbolic links" privilege.  We monkey-patch pathlib.Path so
-        # that symlink_to() silently falls back to a plain file copy instead.
         _orig_symlink_to = pathlib.Path.symlink_to
 
         def _safe_symlink_to(self, target, target_is_directory=False):
             try:
                 _orig_symlink_to(self, target, target_is_directory)
             except OSError:
-                # Symlink failed (Windows privilege issue) — copy the file.
                 src = pathlib.Path(target)
                 if src.is_dir():
                     if self.exists():
@@ -126,12 +453,10 @@ def separate_and_label_voices(signal_arr, sr):
                 run_opts={"device": "cpu"},
             )
         finally:
-            # Always restore the original symlink_to so nothing else is affected.
             pathlib.Path.symlink_to = _orig_symlink_to
 
     sig_tensor = torch.tensor(signal_arr).unsqueeze(0).float()
 
-    # Sepformer requires 8000 Hz
     if sr != 8000:
         resampler = torchaudio.transforms.Resample(orig_freq=int(sr), new_freq=8000)
         sig_tensor = resampler(sig_tensor)
@@ -140,19 +465,16 @@ def separate_and_label_voices(signal_arr, sr):
     spk1 = est_sources[0, :, 0].numpy()
     spk2 = est_sources[0, :, 1].numpy()
 
-    # Resample back to original sr
     if sr != 8000:
         spk1 = librosa.resample(spk1, orig_sr=8000, target_sr=int(sr))
         spk2 = librosa.resample(spk2, orig_sr=8000, target_sr=int(sr))
 
-    # Normalize each speaker to original signal scale
     max_in = np.max(np.abs(signal_arr)) + 1e-10
     for spk in [spk1, spk2]:
         mx = np.max(np.abs(spk))
         if mx > 0:
             spk[:] = spk * (max_in / mx)
 
-    # Classify gender by median pitch (lower = male, higher = female)
     def get_pitch(y, target_sr):
         try:
             f0 = librosa.yin(y, fmin=60, fmax=300, sr=int(target_sr))
@@ -165,22 +487,12 @@ def separate_and_label_voices(signal_arr, sr):
     pitch2 = get_pitch(spk2, sr)
 
     if pitch1 > pitch2:
-        return spk2, spk1  # male (lower), female (higher)
+        return spk2, spk1  
     else:
-        return spk1, spk2  # male (lower), female (higher)
+        return spk1, spk2  
 
 
 # ── Music stem separator (Demucs htdemucs) ────────────────────────────────────
-# Demucs produces 4 raw stems; we remap them to music-EQ-style labels and
-# add a 5th "other" stem that is the residual (input minus sum of the 4).
-#
-#  Demucs name  →  our key          display label
-#  vocals       →  vocals           Vocals
-#  drums        →  bass_kick        Bass / Kick Drum
-#  bass         →  guitar           Guitar / Strings
-#  other        →  piano            Piano / Keys
-#  (computed)   →  other            Other  (residual)
-#
 DEMUCS_TO_KEY = {
     'vocals': 'vocals',
     'drums':  'bass_kick',
@@ -193,28 +505,19 @@ MUSIC_STEM_COLORS = ['#ff4081', '#ff6d00', '#ffea00', '#00e5ff', '#00e676']
 demucs_model = None
 
 def separate_music_stems(signal_arr, sr):
-    """Separate a mono audio signal into 5 display stems.
-    Demucs gives 4 raw stems which are remapped to music-EQ-style labels,
-    and a 5th 'other' residual stem is computed as input minus the sum of the 4.
-    Falls back to a scipy band-pass mock when Demucs is not installed."""
     n = len(signal_arr)
 
     if not HAS_DEMUCS or not HAS_TORCH:
-        # ── Mock fallback: carve stems out with band-pass filters ──────────
         stems = {}
-        # vocals  ~ 300 Hz – 3400 Hz
         b, a = scipy_signal.butter(4, [300, 3400], btype='bandpass', fs=sr)
         stems['vocals'] = scipy_signal.filtfilt(b, a, signal_arr)
-        # bass_kick ~ 20 Hz – 200 Hz  (kick + bass body)
         b, a = scipy_signal.butter(4, [20, 200], btype='bandpass', fs=sr)
         stems['bass_kick'] = scipy_signal.filtfilt(b, a, signal_arr)
-        # guitar ~ 200 Hz – 2000 Hz
         b, a = scipy_signal.butter(4, [200, 2000], btype='bandpass', fs=sr)
         stems['guitar'] = scipy_signal.filtfilt(b, a, signal_arr)
-        # piano ~ 2000 Hz – 8000 Hz
         b, a = scipy_signal.butter(4, [2000, min(8000, sr / 2 - 1)], btype='bandpass', fs=sr)
         stems['piano'] = scipy_signal.filtfilt(b, a, signal_arr)
-        # other = residual
+        
         combined = stems['vocals'] + stems['bass_kick'] + stems['guitar'] + stems['piano']
         stems['other'] = signal_arr - combined
         return stems
@@ -224,12 +527,10 @@ def separate_music_stems(signal_arr, sr):
         demucs_model = demucs_get_model('htdemucs')
         demucs_model.eval()
 
-    # Demucs wants float32 stereo tensor: (1, 2, T)
     mono   = torch.tensor(signal_arr, dtype=torch.float32)
-    stereo = mono.unsqueeze(0).repeat(2, 1)   # (2, T)
-    batch  = stereo.unsqueeze(0)              # (1, 2, T)
+    stereo = mono.unsqueeze(0).repeat(2, 1)   
+    batch  = stereo.unsqueeze(0)              
 
-    # Demucs native sr is 44100; resample if needed
     demucs_sr = demucs_model.samplerate
     if int(sr) != demucs_sr:
         resampler = torchaudio.transforms.Resample(orig_freq=int(sr), new_freq=demucs_sr)
@@ -237,25 +538,22 @@ def separate_music_stems(signal_arr, sr):
 
     with torch.no_grad():
         sources = apply_model(demucs_model, batch, device='cpu', progress=False)
-    # sources shape: (1, n_stems, 2, T)
 
     raw_stems = {}
     for i, demucs_name in enumerate(demucs_model.sources):
         if demucs_name not in DEMUCS_TO_KEY:
             continue
         our_key   = DEMUCS_TO_KEY[demucs_name]
-        stem_mono = sources[0, i].mean(dim=0).numpy()   # (T,)
+        stem_mono = sources[0, i].mean(dim=0).numpy()   
         if int(sr) != demucs_sr:
             stem_mono = librosa.resample(stem_mono, orig_sr=demucs_sr, target_sr=int(sr))
         stem_mono = stem_mono[:n] if len(stem_mono) >= n else np.pad(stem_mono, (0, n - len(stem_mono)))
         raw_stems[our_key] = stem_mono.astype(np.float64)
 
-    # Ensure all 4 mapped stems exist
     for key in DEMUCS_TO_KEY.values():
         if key not in raw_stems:
             raw_stems[key] = np.zeros(n)
 
-    # 5th stem: residual (input minus sum of 4 Demucs stems)
     combined = sum(raw_stems[k] for k in DEMUCS_TO_KEY.values())
     raw_stems['other'] = signal_arr - combined
 
@@ -439,7 +737,6 @@ def index():
 
 @app.route('/api/synthetic', methods=['POST'])
 def generate_synthetic():
-    """Generates a perfect synthetic signal testing 125, 250, 500, 1k, 2k, 4k, 8k Hz."""
     try:
         data = request.get_json()
         mode = data.get('mode', 'generic')
@@ -528,7 +825,6 @@ def wavelet_equalize():
     data    = request.get_json()
     mode    = data.get('mode', 'ecg')
     
-    # Generic Mode does not use wavelets, return early
     if mode == 'generic':
         return jsonify(success=True, output=store[mode].get('signal', []).tolist() if 'signal' in store[mode] else [])
 
@@ -583,8 +879,8 @@ def ai_process():
             male_sig, female_sig = separate_and_label_voices(sig, sr)
             store[mode]['ai_male'] = male_sig
             store[mode]['ai_female'] = female_sig
+            store[mode]['ai_output'] = (male_sig + female_sig) / 2.0
 
-            # Truncate/pad separated signals to match original length
             n = len(sig)
             male_sig = male_sig[:n] if len(male_sig) >= n else np.pad(male_sig, (0, n - len(male_sig)))
             female_sig = female_sig[:n] if len(female_sig) >= n else np.pad(female_sig, (0, n - len(female_sig)))
@@ -601,15 +897,42 @@ def ai_process():
             n = len(sig)
             step = max(1, n // 5000)
 
-            # Store full-resolution stems for audio playback
             for stem_name, stem_arr in stems.items():
                 store[mode][f'ai_{stem_name}'] = stem_arr
+            
+            # Initial mix for ai_output
+            n = len(sig)
+            initial_mix = np.zeros(n)
+            for s in stems.values():
+                initial_mix += s
+            store[mode]['ai_output'] = initial_mix
 
             return jsonify(
                 success=True,
                 is_music=True,
                 stems={name: stems[name][::step].tolist() for name in MUSIC_STEMS},
                 stem_colors={name: color for name, color in zip(MUSIC_STEMS, MUSIC_STEM_COLORS)},
+            )
+        elif mode == 'animals':
+            stems = separate_animal_stems(sig, sr)
+            n = len(sig)
+            step = max(1, n // 5000)
+
+            for stem_name, stem_arr in stems.items():
+                store[mode][f'ai_{stem_name}'] = stem_arr
+
+            # Build initial mix with all gains = 1.0
+            initial_mix = np.zeros(n)
+            for stem_name, stem_arr in stems.items():
+                initial_mix += stem_arr
+            store[mode]['ai_animal_mix'] = initial_mix
+            store[mode]['ai_output']     = initial_mix
+
+            return jsonify(
+                success=True,
+                is_animals=True,
+                stems={name: stems[name][::step].tolist() for name in ANIMAL_STEMS},
+                stem_colors={name: color for name, color in zip(ANIMAL_STEMS, ANIMAL_STEM_COLORS)},
             )
         else:
             output = apply_ai_denoising(sig, sr)
@@ -627,6 +950,7 @@ def ai_process():
                 success=True,
                 is_voices=False,
                 is_music=False,
+                is_animals=False,
                 output=output.tolist(),
                 removed_noise=removed_noise.tolist(),
                 frequencies=freqs[::step].tolist(),
@@ -636,6 +960,76 @@ def ai_process():
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify(success=False, error=str(e))
+
+@app.route('/api/mix_voice_stems', methods=['POST'])
+def mix_voice_stems():
+    data = request.get_json()
+    mode = 'voices'
+    if 'signal' not in store.get(mode, {}):
+        return jsonify(success=False, error='No signal loaded')
+
+    gains = data.get('gains', {})
+    n = len(store[mode]['signal'])
+    mixed = np.zeros(n)
+
+    for stem in ['male', 'female']:
+        stem_data = store[mode].get(f'ai_{stem}')
+        if stem_data is not None:
+            g = float(gains.get(stem, 1.0))
+            arr = np.array(stem_data)
+            arr = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)))
+            mixed += arr * g
+
+    store[mode]['ai_voice_mix'] = mixed
+    store[mode]['ai_output']    = mixed
+    return jsonify(success=True)
+
+@app.route('/api/mix_music_stems', methods=['POST'])
+def mix_music_stems():
+    data = request.get_json()
+    mode = 'music'
+    if 'signal' not in store.get(mode, {}):
+        return jsonify(success=False, error='No signal loaded')
+
+    gains = data.get('gains', {})
+    n = len(store[mode]['signal'])
+    mixed = np.zeros(n)
+
+    for stem in MUSIC_STEMS:
+        stem_data = store[mode].get(f'ai_{stem}')
+        if stem_data is not None:
+            g = float(gains.get(stem, 1.0))
+            arr = np.array(stem_data)
+            arr = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)))
+            mixed += arr * g
+
+    store[mode]['ai_music_mix'] = mixed
+    store[mode]['ai_output']    = mixed
+    return jsonify(success=True)
+
+@app.route('/api/mix_animal_stems', methods=['POST'])
+def mix_animal_stems():
+    data = request.get_json()
+    mode = 'animals'
+    if 'signal' not in store.get(mode, {}):
+        return jsonify(success=False, error='No signal loaded')
+
+    gains = data.get('gains', {})
+    n = len(store[mode]['signal'])
+    mixed = np.zeros(n)
+
+    for stem in ANIMAL_STEMS:
+        stem_data = store[mode].get(f'ai_{stem}')
+        if stem_data is not None:
+            g = float(gains.get(stem, 1.0))
+            arr = np.array(stem_data)
+            arr = arr[:n] if len(arr) >= n else np.pad(arr, (0, n - len(arr)))
+            mixed += arr * g
+
+    store[mode]['ai_animal_mix'] = mixed
+    store[mode]['ai_output']    = mixed
+    return jsonify(success=True)
+
 
 @app.route('/api/spectrogram', methods=['GET'])
 def get_spectrogram():
@@ -707,7 +1101,13 @@ def get_audio():
         sig = store[mode].get('ai_male', store[mode]['signal'])
     elif which == 'female':
         sig = store[mode].get('ai_female', store[mode]['signal'])
-    elif which in MUSIC_STEMS:
+    elif which == 'voice_mix':
+        sig = store[mode].get('ai_voice_mix', store[mode]['signal'])
+    elif which == 'music_mix':
+        sig = store[mode].get('ai_music_mix', store[mode]['signal'])
+    elif which == 'animal_mix':
+        sig = store[mode].get('ai_animal_mix', store[mode]['signal'])
+    elif which in MUSIC_STEMS or which in ANIMAL_STEMS:
         sig = store[mode].get(f'ai_{which}', store[mode]['signal'])
     else:
         sig = store[mode]['signal']
