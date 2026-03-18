@@ -1,0 +1,2095 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signal Equalizer</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script>
+        function attachPan(chart, onPanMove) {
+            const canvas = chart.canvas;
+            let dragging = false, startX, startY, xMinS, xMaxS, yMinS, yMaxS;
+            canvas.style.cursor = 'grab';
+            function onDown(e) {
+                if (e.button !== 0) return;
+                dragging = true; startX = e.clientX; startY = e.clientY;
+                xMinS = chart.scales.x.min; xMaxS = chart.scales.x.max;
+                yMinS = chart.scales.y.min; yMaxS = chart.scales.y.max;
+                canvas.style.cursor = 'grabbing'; e.preventDefault();
+            }
+            function onMove(e) {
+                if (!dragging) return;
+                const xs = chart.scales.x, ys = chart.scales.y;
+                const xPx = xs.right - xs.left || 1, yPx = ys.bottom - ys.top || 1;
+                const dx = e.clientX - startX, dy = e.clientY - startY;
+                if (xs.type === 'logarithmic') {
+                    const logMin = Math.log10(xMinS), logMax = Math.log10(xMaxS);
+                    const logDelta = (dx / xPx) * (logMax - logMin);
+                    chart.options.scales.x.min = Math.pow(10, logMin - logDelta);
+                    chart.options.scales.x.max = Math.pow(10, logMax - logDelta);
+                } else {
+                    const xR = xMaxS - xMinS;
+                    chart.options.scales.x.min = xMinS - (dx / xPx) * xR;
+                    chart.options.scales.x.max = xMaxS - (dx / xPx) * xR;
+                }
+                const yR = yMaxS - yMinS;
+                chart.options.scales.y.min = yMinS + (dy / yPx) * yR;
+                chart.options.scales.y.max = yMaxS + (dy / yPx) * yR;
+                chart.update('none'); if (onPanMove) onPanMove(chart);
+            }
+            function onUp() { if (dragging) { dragging = false; canvas.style.cursor = 'grab'; if (onPanMove) onPanMove(chart); } }
+            function onDblClick() {
+                chart.options.scales.x.min = chart.options.scales.x.max = undefined;
+                chart.options.scales.y.min = chart.options.scales.y.max = undefined;
+                chart.resetZoom(); if (onPanMove) onPanMove(chart);
+            }
+            if (canvas._panCleanup) canvas._panCleanup();
+            canvas.addEventListener('mousedown', onDown);
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+            canvas.addEventListener('dblclick', onDblClick);
+            canvas._panCleanup = () => {
+                canvas.removeEventListener('mousedown', onDown);
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                canvas.removeEventListener('dblclick', onDblClick);
+            };
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg0: #080b12;
+            --bg1: #0d1117;
+            --bg2: #131920;
+            --bg3: #1a2230;
+            --border: rgba(255, 255, 255, 0.07);
+            --accent: #00e5ff;
+            --accent2: #7c4dff;
+            --accent3: #ff4081;
+            --text: #cdd6f4;
+            --muted: #6c7a96;
+            --green: #00e676;
+            --yellow: #ffea00;
+            --orange: #ff6d00;
+        }
+
+        body {
+            font-family: 'Oxanium', sans-serif;
+            background: var(--bg0);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 14px;
+            background-image: radial-gradient(ellipse 80% 50% at 20% 0%, rgba(0, 229, 255, 0.04) 0%, transparent 60%),
+                radial-gradient(ellipse 60% 40% at 80% 100%, rgba(124, 77, 255, 0.04) 0%, transparent 60%);
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg1)
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg3);
+            border-radius: 3px
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 14px;
+        }
+
+        .header h1 {
+            font-size: 1.9rem;
+            font-weight: 700;
+            letter-spacing: .08em;
+            background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header p {
+            color: var(--muted);
+            font-size: .78rem;
+            font-family: 'JetBrains Mono', monospace;
+            margin-top: 2px;
+        }
+
+        .top-bar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 14px;
+            background: var(--bg1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 16px;
+        }
+
+        .top-bar label {
+            font-size: .8rem;
+            color: var(--muted);
+        }
+
+        .mode-switcher {
+            display: flex;
+            gap: 4px;
+            background: var(--bg0);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 3px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .mode-btn {
+            padding: 5px 13px;
+            border-radius: 6px;
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            font-family: 'Oxanium', sans-serif;
+            font-size: .78rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all .2s;
+            white-space: nowrap;
+        }
+
+        .mode-btn:hover {
+            color: var(--text);
+        }
+
+        .mode-btn.active {
+            background: linear-gradient(135deg, var(--accent2), var(--accent));
+            color: #fff;
+            box-shadow: 0 2px 10px rgba(0, 229, 255, .25);
+        }
+
+        .file-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 13px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+            color: var(--text);
+            font-family: 'Oxanium', sans-serif;
+            font-size: .8rem;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .file-label:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .top-btn {
+            padding: 6px 13px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+            color: var(--muted);
+            font-family: 'Oxanium', sans-serif;
+            font-size: .8rem;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .top-btn:hover {
+            border-color: var(--accent2);
+            color: var(--accent2);
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 265px 1fr;
+            gap: 14px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        @media(max-width:900px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--bg1);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+        }
+
+        .slider-panel {
+            position: sticky;
+            top: 14px;
+            align-self: start;
+            max-height: calc(100vh - 28px);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .panel-title {
+            font-size: .9rem;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: .05em;
+            margin-bottom: 4px;
+        }
+
+        .mode-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: .65rem;
+            font-weight: 700;
+            letter-spacing: .08em;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
+        .badge-ecg {
+            background: rgba(0, 230, 118, .15);
+            color: var(--green);
+            border: 1px solid rgba(0, 230, 118, .3);
+        }
+
+        .badge-music {
+            background: rgba(255, 234, 0, .12);
+            color: var(--yellow);
+            border: 1px solid rgba(255, 234, 0, .3);
+        }
+
+        .badge-voices {
+            background: rgba(255, 64, 129, .12);
+            color: var(--accent3);
+            border: 1px solid rgba(255, 64, 129, .3);
+        }
+
+        .badge-animals {
+            background: rgba(0, 229, 255, .12);
+            color: var(--accent);
+            border: 1px solid rgba(0, 229, 255, .3);
+        }
+
+        .domain-section {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .domain-title {
+            font-size: .72rem;
+            font-weight: 700;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 2px;
+        }
+
+        .domain-title.freq-title {
+            color: var(--accent2);
+        }
+
+        .domain-title.wav-title {
+            color: #ff9f43;
+        }
+
+        .wavelet-badge {
+            font-size: .6rem;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: rgba(255, 159, 67, .15);
+            color: #ff9f43;
+            border: 1px solid rgba(255, 159, 67, .3);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .slider-label {
+            font-size: .76rem;
+            color: var(--muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .slider-label .val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: .75rem;
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .slider-group input[type="range"] {
+            width: 100%;
+            height: 5px;
+            border-radius: 3px;
+            background: var(--bg3);
+            outline: none;
+            -webkit-appearance: none;
+            cursor: pointer;
+        }
+
+        .slider-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid var(--bg0);
+            box-shadow: 0 0 6px rgba(0, 229, 255, .4);
+        }
+
+        .slider-desc {
+            font-size: .64rem;
+            color: #3d4a5c;
+            font-style: italic;
+            line-height: 1.4;
+        }
+
+        .reset-btn {
+            width: 100%;
+            padding: 7px;
+            border-radius: 7px;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+            color: var(--muted);
+            font-family: 'Oxanium', sans-serif;
+            font-size: .78rem;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .reset-btn:hover {
+            border-color: var(--accent2);
+            color: var(--accent2);
+        }
+
+        .info-bar {
+            font-size: .72rem;
+            color: var(--muted);
+            text-align: center;
+            padding: 5px;
+            background: var(--bg0);
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .viewers-area {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .viewer-box {
+            background: var(--bg1);
+            border-radius: 10px;
+            padding: 11px;
+            border: 1px solid var(--border);
+        }
+
+        .viewer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 7px;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .viewer-title {
+            font-size: .85rem;
+            font-weight: 700;
+            letter-spacing: .04em;
+        }
+
+        .chart-wrap {
+            height: 320px;
+            position: relative;
+        }
+
+        .chart-wrap canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        .freq-chart-wrap {
+            height: 400px;
+            position: relative;
+        }
+
+        .zoom-controls {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            z-index: 10;
+            display: flex;
+            gap: 3px;
+        }
+
+        .zoom-btn {
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+            color: var(--text);
+            font-size: .85rem;
+            cursor: pointer;
+            transition: all .15s;
+            line-height: 1;
+        }
+
+        .zoom-btn:hover {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #000;
+        }
+
+        .axis-btns {
+            display: flex;
+            gap: 2px;
+            margin-left: 6px;
+            padding-left: 6px;
+            border-left: 1px solid var(--border);
+        }
+
+        .axis-btn {
+            padding: 2px 6px;
+            border-radius: 3px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            font-size: .65rem;
+            cursor: pointer;
+            transition: all .15s;
+            font-family: 'Oxanium', sans-serif;
+        }
+
+        .axis-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #000;
+            font-weight: 700;
+        }
+
+        .playback-bar {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            flex-wrap: wrap;
+        }
+
+        .play-btn {
+            padding: 5px 12px;
+            border: none;
+            border-radius: 7px;
+            font-size: .9rem;
+            cursor: pointer;
+            transition: all .15s;
+            color: #fff;
+            font-family: 'Oxanium', sans-serif;
+        }
+
+        .play-btn:hover {
+            transform: scale(1.07);
+        }
+
+        .play-btn.play {
+            background: #00c853;
+        }
+
+        .play-btn.pause {
+            background: #ffc400;
+            color: #000;
+        }
+
+        .play-btn.reset-pb {
+            background: linear-gradient(135deg, var(--accent2), var(--accent));
+        }
+
+        .pos-slider {
+            flex: 1;
+            height: 5px;
+            border-radius: 3px;
+            background: var(--bg3);
+            -webkit-appearance: none;
+            cursor: pointer;
+            min-width: 60px;
+        }
+
+        .pos-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .speed-wrap {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .speed-wrap label {
+            font-size: .68rem;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .speed-wrap input {
+            width: 55px;
+        }
+
+        .time-display {
+            font-size: .75rem;
+            color: var(--accent);
+            min-width: 100px;
+            text-align: right;
+            white-space: nowrap;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .status-pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-size: .65rem;
+            font-weight: 700;
+        }
+
+        .status-pill.playing {
+            background: rgba(0, 200, 83, .15);
+            color: #00e676;
+        }
+
+        .status-pill.paused {
+            background: rgba(108, 117, 125, .15);
+            color: var(--muted);
+        }
+
+        .status-pill.stopped {
+            background: rgba(108, 122, 150, 0.15);
+            color: #8e9bb0;
+        }
+
+        .audio-btn {
+            padding: 3px 9px;
+            border-radius: 5px;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+            color: var(--muted);
+            font-size: .72rem;
+            cursor: pointer;
+            transition: all .15s;
+            font-family: 'Oxanium', sans-serif;
+        }
+
+        .audio-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .audio-btn.playing {
+            background: rgba(0, 229, 255, .12);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .freq-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .scale-btns {
+            display: flex;
+            gap: 3px;
+        }
+
+        .scale-btn {
+            padding: 3px 9px;
+            border-radius: 5px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            font-size: .72rem;
+            cursor: pointer;
+            transition: all .15s;
+            font-family: 'Oxanium', sans-serif;
+        }
+
+        .scale-btn.active {
+            background: var(--accent2);
+            border-color: var(--accent2);
+            color: #fff;
+        }
+
+        .spectro-toggle {
+            padding: 4px 12px;
+            border-radius: 7px;
+            border: 1px solid var(--border);
+            background: var(--bg2);
+            color: var(--muted);
+            font-size: .76rem;
+            cursor: pointer;
+            transition: all .15s;
+            font-family: 'Oxanium', sans-serif;
+        }
+
+        .spectro-toggle:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .spectro-toggle.active {
+            background: rgba(0, 229, 255, .1);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .spectro-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .spectro-box canvas {
+            width: 100% !important;
+            height: 300px !important;
+            border-radius: 6px;
+        }
+
+        .spectro-label {
+            font-size: .7rem;
+            color: var(--muted);
+            margin-bottom: 3px;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>⚡ SIGNAL EQUALIZER</h1>
+        <p>scroll to zoom · drag to pan · double-click to reset view</p>
+    </div>
+
+    <div class="top-bar">
+        <div class="mode-switcher">
+            <button class="mode-btn active" onclick="switchMode('ecg',this)">🫀 ECG</button>
+            <button class="mode-btn" onclick="switchMode('music',this)">🎸 Music</button>
+            <button class="mode-btn" onclick="switchMode('voices',this)">🎤 Voices</button>
+            <button class="mode-btn" onclick="switchMode('animals',this)">🐾 Animals</button>
+            <button class="mode-btn" onclick="switchMode('generic',this)">🎛 Generic</button>
+        </div>
+        <label class="file-label" for="fileInput">
+            📁 <span id="uploadLabelText">Upload ECG Signal</span>
+            <input type="file" id="fileInput" class="file-input" accept=".csv,.dat,.wav,.mp3"
+                onchange="loadFile(event)">
+        </label>
+        <label class="file-label" for="settingsInput">
+            📥 Load Settings
+            <input type="file" id="settingsInput" class="file-input" accept=".txt,.json"
+                onchange="loadSettingsFile(event)">
+        </label>
+        <button id="syntheticBtn" class="top-btn"
+            style="background:var(--accent);color:#000;font-weight:700;border:none;display:none;"
+            onclick="generateSynthetic()">🧪 Generate Synthetic Signal</button>
+        <button class="top-btn" onclick="saveSettings()">💾 Save Settings</button>
+    </div>
+
+    <div class="main-grid">
+        <!-- ══ SIDEBAR ══ -->
+        <div class="panel slider-panel">
+            <div>
+                <div class="panel-title">🎚️ Equalizer
+                    <span class="mode-badge badge-ecg" id="modeBadge">ECG</span>
+                </div>
+            </div>
+
+            <div class="domain-section">
+                <div class="domain-title freq-title">📊 Frequency Domain</div>
+                <div id="customBandForm"
+                    style="display:none;margin-bottom:10px;padding:10px;border:1px dashed var(--border);border-radius:8px;background:rgba(0,0,0,0.2);">
+                    <div
+                        style="font-size:0.7rem;font-weight:700;color:var(--accent);margin-bottom:6px;letter-spacing:0.05em;text-transform:uppercase;">
+                        Add Custom Frequency Band</div>
+                    <div style="display:flex;gap:6px;">
+                        <input type="number" id="cMin" placeholder="Min Hz"
+                            style="flex:1;width:0;background:var(--bg1);color:white;border:1px solid var(--border);padding:5px;font-size:0.75rem;border-radius:5px;outline:none;font-family:'JetBrains Mono',monospace;">
+                        <input type="number" id="cMax" placeholder="Max Hz"
+                            style="flex:1;width:0;background:var(--bg1);color:white;border:1px solid var(--border);padding:5px;font-size:0.75rem;border-radius:5px;outline:none;font-family:'JetBrains Mono',monospace;">
+                        <button onclick="addGenericBand()"
+                            style="background:var(--accent);color:#000;border:none;padding:0 12px;border-radius:5px;font-weight:bold;cursor:pointer;font-family:'Oxanium',sans-serif;">+</button>
+                    </div>
+                </div>
+                <div id="freqSlidersContainer"></div>
+                <button class="reset-btn" onclick="resetFreqEqualizer()" style="margin-top:2px;">↺ Reset Freq</button>
+            </div>
+
+            <div id="wavDomainSection" class="domain-section">
+                <div class="domain-title wav-title">〜 Wavelet Domain
+                    <span class="wavelet-badge" id="waveletBadge">db4</span>
+                </div>
+                <div id="wavSlidersContainer"></div>
+                <button class="reset-btn" onclick="resetWavEqualizer()"
+                    style="margin-top:2px;border-color:rgba(255,159,67,.3);color:#ff9f43;"
+                    onmouseover="this.style.borderColor='#ff9f43'"
+                    onmouseout="this.style.borderColor='rgba(255,159,67,.3)'">↺ Reset Wavelet</button>
+            </div>
+
+            <div class="info-bar" id="infoBar">No signal loaded</div>
+
+            <div id="aiControlSection">
+                <div class="section-label"
+                    style="margin-top:14px;border-bottom:1px solid var(--border);color:#ff4081;font-size:.68rem;letter-spacing:.1em;padding-bottom:2px;">
+                    AI Model Comparison</div>
+                <button id="aiProcessBtn" class="top-btn"
+                    style="width:100%;border-color:#ff4081;color:#ff4081;font-weight:700;" onclick="applyAIModel()">🤖
+                    Run FCN-DAE Denoising</button>
+                <div class="slider-desc" style="text-align:center;margin-top:4px;" id="aiDesc">Deep learning isolation
+                </div>
+
+                <!-- ── VOICE MIXER ── -->
+                <div id="aiVoiceMixer"
+                    style="display:none;margin-top:14px;padding-top:10px;border-top:1px dashed var(--border);">
+                    <div
+                        style="font-size:.7rem;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:.05em;">
+                        🎚️ Mix Separated Voices</div>
+                    <div class="slider-group">
+                        <div class="slider-label"><span style="color:#00b0ff;">● Male Gain</span><span class="val"
+                                id="maleGainVal">1.0</span></div>
+                        <input type="range" id="maleGainSlider" min="0" max="2" step="0.1" value="1"
+                            style="accent-color:#00b0ff;" oninput="updateAiVoiceMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:8px;">
+                        <div class="slider-label"><span style="color:#ff4081;">● Female Gain</span><span class="val"
+                                id="femGainVal">1.0</span></div>
+                        <input type="range" id="femGainSlider" min="0" max="2" step="0.1" value="1"
+                            style="accent-color:#ff4081;" oninput="updateAiVoiceMix()">
+                    </div>
+                    <div style="display:flex;gap:4px;margin-top:8px;">
+                        <button class="audio-btn" id="audioMaleBtn" onclick="toggleAudio('male')"
+                            style="flex:1;border-color:#00b0ff;color:#00b0ff;">🔊 Male</button>
+                        <button class="audio-btn" id="audioFemaleBtn" onclick="toggleAudio('female')"
+                            style="flex:1;border-color:#ff4081;color:#ff4081;">🔊 Female</button>
+                    </div>
+                    <button class="audio-btn" id="audioVoiceMixBtn" onclick="toggleAudio('voice_mix')"
+                        style="width:100%;margin-top:4px;border-color:#fff;color:#fff;font-weight:700;">🔊 Play
+                        Mix</button>
+                </div>
+
+                <!-- ── MUSIC MIXER ── -->
+                <div id="aiMusicMixer"
+                    style="display:none;margin-top:14px;padding-top:10px;border-top:1px dashed var(--border);">
+                    <div
+                        style="font-size:.7rem;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:.05em;">
+                        🎚️ Mix Instrument Stems</div>
+                    <div class="slider-group">
+                        <div class="slider-label"><span style="color:#ff4081;">● Vocals</span><span class="val"
+                                id="vocalsGainVal">1.0</span></div>
+                        <input type="range" id="vocalsGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ff4081;" oninput="updateAiMusicMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ff6d00;">● Bass / Kick Drum</span><span
+                                class="val" id="bassKickGainVal">1.0</span></div>
+                        <input type="range" id="bassKickGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ff6d00;" oninput="updateAiMusicMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ffea00;">● Guitar / Strings</span><span
+                                class="val" id="guitarGainVal">1.0</span></div>
+                        <input type="range" id="guitarGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ffea00;" oninput="updateAiMusicMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#00e5ff;">● Piano / Keys</span><span class="val"
+                                id="pianoGainVal">1.0</span></div>
+                        <input type="range" id="pianoGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#00e5ff;" oninput="updateAiMusicMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#00e676;">● Other</span><span class="val"
+                                id="otherGainVal">1.0</span></div>
+                        <input type="range" id="otherGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#00e676;" oninput="updateAiMusicMix()">
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;">
+                        <button class="audio-btn" id="audioVocalsBtn" onclick="toggleAudio('vocals')"
+                            style="border-color:#ff4081;color:#ff4081;">🔊 Vocals</button>
+                        <button class="audio-btn" id="audioBassKickBtn" onclick="toggleAudio('bass_kick')"
+                            style="border-color:#ff6d00;color:#ff6d00;">🔊 Bass/Kick</button>
+                        <button class="audio-btn" id="audioGuitarBtn" onclick="toggleAudio('guitar')"
+                            style="border-color:#ffea00;color:#ffea00;">🔊 Guitar</button>
+                        <button class="audio-btn" id="audioPianoBtn" onclick="toggleAudio('piano')"
+                            style="border-color:#00e5ff;color:#00e5ff;">🔊 Piano</button>
+                        <button class="audio-btn" id="audioOtherBtn" onclick="toggleAudio('other')"
+                            style="border-color:#00e676;color:#00e676;grid-column:span 2;">🔊 Other</button>
+                    </div>
+                    <button class="audio-btn" id="audioMusicMixBtn" onclick="toggleAudio('music_mix')"
+                        style="width:100%;margin-top:4px;border-color:#fff;color:#fff;font-weight:700;">🔊 Play
+                        Mix</button>
+                </div>
+
+                <!-- ── ANIMAL MIXER ── -->
+                <div id="aiAnimalMixer"
+                    style="display:none;margin-top:14px;padding-top:10px;border-top:1px dashed var(--border);">
+                    <div
+                        style="font-size:.7rem;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:.05em;">
+                        🎚️ Mix Animal Stems</div>
+                    <div class="slider-group">
+                        <div class="slider-label"><span style="color:#00e5ff;">● Bird</span><span class="val"
+                                id="birdGainVal">1.0</span></div>
+                        <input type="range" id="birdGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#00e5ff;" oninput="updateAiAnimalMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ff6d00;">● Dog</span><span class="val"
+                                id="dogGainVal">1.0</span></div>
+                        <input type="range" id="dogGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ff6d00;" oninput="updateAiAnimalMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ffea00;">● Cat</span><span class="val"
+                                id="catGainVal">1.0</span></div>
+                        <input type="range" id="catGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ffea00;" oninput="updateAiAnimalMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#00e676;">● Frog</span><span class="val"
+                                id="frogGainVal">1.0</span></div>
+                        <input type="range" id="frogGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#00e676;" oninput="updateAiAnimalMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ff4081;">● Other</span><span class="val"
+                                id="otherAnimGainVal">1.0</span></div>
+                        <input type="range" id="otherAnimGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ff4081;" oninput="updateAiAnimalMix()">
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;">
+                        <button class="audio-btn" id="audioBirdBtn" onclick="toggleAudio('bird')"
+                            style="border-color:#00e5ff;color:#00e5ff;">🔊 Bird</button>
+                        <button class="audio-btn" id="audioDogBtn" onclick="toggleAudio('dog')"
+                            style="border-color:#ff6d00;color:#ff6d00;">🔊 Dog</button>
+                        <button class="audio-btn" id="audioCatBtn" onclick="toggleAudio('cat')"
+                            style="border-color:#ffea00;color:#ffea00;">🔊 Cat</button>
+                        <button class="audio-btn" id="audioFrogBtn" onclick="toggleAudio('frog')"
+                            style="border-color:#00e676;color:#00e676;">🔊 Frog</button>
+                        <button class="audio-btn" id="audioOtherAnimBtn" onclick="toggleAudio('other')"
+                            style="border-color:#ff4081;color:#ff4081;grid-column:span 2;">🔊 Other</button>
+                    </div>
+                    <button class="audio-btn" id="audioAnimalMixBtn" onclick="toggleAudio('animal_mix')"
+                        style="width:100%;margin-top:4px;border-color:#fff;color:#fff;font-weight:700;">🔊 Play
+                        Mix</button>
+                </div>
+
+                <!-- ── ECG STEMS MIXER (5 labels) ── -->
+                <div id="aiEcgStemsMixer"
+                    style="display:none;margin-top:14px;padding-top:10px;border-top:1px dashed var(--border);">
+                    <div
+                        style="font-size:.7rem;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:.05em;">
+                        🫀 ECG Label Contributions</div>
+                    <div class="slider-group">
+                        <div class="slider-label"><span style="color:#00e5ff;">● Normal</span><span class="val"
+                                id="ecgNormalGainVal">1.0</span></div>
+                        <input type="range" id="ecgNormalGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#00e5ff;" oninput="updateAiEcgStemsMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ff6d00;">● LBBB</span><span class="val"
+                                id="ecgLBBBGainVal">1.0</span></div>
+                        <input type="range" id="ecgLBBBGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ff6d00;" oninput="updateAiEcgStemsMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#ffea00;">● RBBB</span><span class="val"
+                                id="ecgRBBBGainVal">1.0</span></div>
+                        <input type="range" id="ecgRBBBGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#ffea00;" oninput="updateAiEcgStemsMix()">
+                    </div>
+                    <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#00e676;">● PVC</span><span class="val"
+                                id="ecgPVCGainVal">1.0</span></div>
+                        <input type="range" id="ecgPVCGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#00e676;" oninput="updateAiEcgStemsMix()">
+                    </div>
+                    <!-- <div class="slider-group" style="margin-top:6px;">
+                        <div class="slider-label"><span style="color:#aa00ff;">● Other</span><span class="val"
+                                id="ecgOtherGainVal">1.0</span></div>
+                        <input type="range" id="ecgOtherGainSlider" min="0" max="2" step="0.05" value="1"
+                            style="accent-color:#aa00ff;" oninput="updateAiEcgStemsMix()">
+                    </div> -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;">
+                        <button class="audio-btn" id="audioEcgNormalBtn" onclick="toggleAudio('Normal')"
+                            style="border-color:#00e5ff;color:#00e5ff;">🔊 Normal</button>
+                        <button class="audio-btn" id="audioEcgLBBBBtn" onclick="toggleAudio('LBBB')"
+                            style="border-color:#ff6d00;color:#ff6d00;">🔊 LBBB</button>
+                        <button class="audio-btn" id="audioEcgRBBBBtn" onclick="toggleAudio('RBBB')"
+                            style="border-color:#ffea00;color:#ffea00;">🔊 RBBB</button>
+                        <button class="audio-btn" id="audioEcgPVCBtn" onclick="toggleAudio('PVC')"
+                            style="border-color:#00e676;color:#00e676;">🔊 PVC</button>
+                        <!-- <button class="audio-btn" id="audioEcgOtherBtn" onclick="toggleAudio('Other')"
+                            style="border-color:#aa00ff;color:#aa00ff;grid-column:span 2;">🔊 Other</button> -->
+                    </div>
+                </div>
+
+            </div><!-- end aiControlSection -->
+        </div><!-- end sidebar -->
+
+        <!-- ══ VIEWERS ══ -->
+        <div class="viewers-area">
+            <div class="viewer-box">
+                <div class="viewer-header">
+                    <span class="viewer-title" style="color:var(--accent);">📥 Input Signal</span>
+                    <button class="audio-btn" id="audioInBtn" onclick="toggleAudio('input')">🔊 Play Audio</button>
+                </div>
+                <div class="chart-wrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomBoth(1.2)">+</button>
+                        <button class="zoom-btn" onclick="zoomBoth(0.8)">−</button>
+                        <button class="zoom-btn" onclick="resetZoom()">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setZoomAxis('xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setZoomAxis('x',this)">X</button>
+                            <button class="axis-btn" onclick="setZoomAxis('y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="inputChart"></canvas>
+                </div>
+            </div>
+
+            <div class="viewer-box">
+                <div class="viewer-header">
+                    <span class="viewer-title" style="color:var(--green);">📈 Fourier Output Signal</span>
+                    <button class="audio-btn" id="audioFftBtn" onclick="toggleAudio('fft')">🔊 Play Audio</button>
+                </div>
+                <div class="chart-wrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomBoth(1.2)">+</button>
+                        <button class="zoom-btn" onclick="zoomBoth(0.8)">−</button>
+                        <button class="zoom-btn" onclick="resetZoom()">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setZoomAxis('xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setZoomAxis('x',this)">X</button>
+                            <button class="axis-btn" onclick="setZoomAxis('y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="fftChart"></canvas>
+                </div>
+            </div>
+
+            <div class="viewer-box" id="wavOutputBox">
+                <div class="viewer-header">
+                    <span class="viewer-title" style="color:#ff9f43;">〜 Wavelet Output Signal</span>
+                    <button class="audio-btn" id="audioWavBtn" onclick="toggleAudio('wav')">🔊 Play Audio</button>
+                </div>
+                <div class="chart-wrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomBoth(1.2)">+</button>
+                        <button class="zoom-btn" onclick="zoomBoth(0.8)">−</button>
+                        <button class="zoom-btn" onclick="resetZoom()">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setZoomAxis('xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setZoomAxis('x',this)">X</button>
+                            <button class="axis-btn" onclick="setZoomAxis('y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="wavOutputChart"></canvas>
+                </div>
+            </div>
+
+            <!-- ── AI OUTPUT BOX ── -->
+            <div class="viewer-box" id="aiBox" style="display:none;">
+                <div class="viewer-header">
+                    <span class="viewer-title" id="aiBoxTitle" style="color:#ff4081;">🤖 AI Denoised Output</span>
+                    <!-- ECG single output (fallback) -->
+                    <div id="aiBoxAudioEcg">
+                        <button class="audio-btn" id="audioAiBtn" onclick="toggleAudio('ai')"
+                            style="color:#ff4081;border-color:#ff4081;">🔊 Play Audio</button>
+                    </div>
+                    <!-- ECG stems audio (model loaded) -->
+                    <div id="aiBoxAudioEcgStems" style="display:none;gap:4px;flex-wrap:wrap;">
+                        <button class="audio-btn" onclick="toggleAudio('Normal')"
+                            style="color:#00e5ff;border-color:#00e5ff;" id="audioEcgNormalBtnChart">🔊 Normal</button>
+                        <button class="audio-btn" onclick="toggleAudio('LBBB')"
+                            style="color:#ff6d00;border-color:#ff6d00;" id="audioEcgLBBBBtnChart">🔊 LBBB</button>
+                        <button class="audio-btn" onclick="toggleAudio('RBBB')"
+                            style="color:#ffea00;border-color:#ffea00;" id="audioEcgRBBBBtnChart">🔊 RBBB</button>
+                        <button class="audio-btn" onclick="toggleAudio('PVC')"
+                            style="color:#00e676;border-color:#00e676;" id="audioEcgPVCBtnChart">🔊 PVC</button>
+                        <!-- <button class="audio-btn" onclick="toggleAudio('Other')"
+                            style="color:#aa00ff;border-color:#aa00ff;" id="audioEcgOtherBtnChart">🔊 Other</button> -->
+                    </div>
+                    <!-- Voices -->
+                    <div id="aiBoxAudioVoices" style="display:none;gap:4px;flex-wrap:wrap;">
+                        <button class="audio-btn" onclick="toggleAudio('male')"
+                            style="color:#00b0ff;border-color:#00b0ff;" id="audioMaleBtnChart">🔊 Male</button>
+                        <button class="audio-btn" onclick="toggleAudio('female')"
+                            style="color:#ff4081;border-color:#ff4081;" id="audioFemaleBtnChart">🔊 Female</button>
+                        <button class="audio-btn" onclick="toggleAudio('voice_mix')"
+                            style="color:#fff;border-color:#fff;font-weight:700;" id="audioVoiceMixBtnChart">🔊 Play
+                            Mix</button>
+                    </div>
+                    <!-- Music -->
+                    <div id="aiBoxAudioMusic" style="display:none;gap:4px;flex-wrap:wrap;">
+                        <button class="audio-btn" onclick="toggleAudio('vocals')"
+                            style="color:#ff4081;border-color:#ff4081;" id="audioVocalsBtnChart">🔊 Vocals</button>
+                        <button class="audio-btn" onclick="toggleAudio('bass_kick')"
+                            style="color:#ff6d00;border-color:#ff6d00;" id="audioBassKickBtnChart">🔊 Bass/Kick</button>
+                        <button class="audio-btn" onclick="toggleAudio('guitar')"
+                            style="color:#ffea00;border-color:#ffea00;" id="audioGuitarBtnChart">🔊 Guitar</button>
+                        <button class="audio-btn" onclick="toggleAudio('piano')"
+                            style="color:#00e5ff;border-color:#00e5ff;" id="audioPianoBtnChart">🔊 Piano</button>
+                        <button class="audio-btn" onclick="toggleAudio('other')"
+                            style="color:#00e676;border-color:#00e676;" id="audioOtherBtnChart">🔊 Other</button>
+                        <button class="audio-btn" onclick="toggleAudio('music_mix')"
+                            style="color:#fff;border-color:#fff;font-weight:700;" id="audioMusicMixBtnChart">🔊 Play
+                            Mix</button>
+                    </div>
+                    <!-- Animals -->
+                    <div id="aiBoxAudioAnimals" style="display:none;gap:4px;flex-wrap:wrap;">
+                        <button class="audio-btn" onclick="toggleAudio('bird')"
+                            style="color:#00e5ff;border-color:#00e5ff;" id="audioBirdBtnChart">🔊 Bird</button>
+                        <button class="audio-btn" onclick="toggleAudio('dog')"
+                            style="color:#ff6d00;border-color:#ff6d00;" id="audioDogBtnChart">🔊 Dog</button>
+                        <button class="audio-btn" onclick="toggleAudio('cat')"
+                            style="color:#ffea00;border-color:#ffea00;" id="audioCatBtnChart">🔊 Cat</button>
+                        <button class="audio-btn" onclick="toggleAudio('frog')"
+                            style="color:#00e676;border-color:#00e676;" id="audioFrogBtnChart">🔊 Frog</button>
+                        <button class="audio-btn" onclick="toggleAudio('other')"
+                            style="color:#ff4081;border-color:#ff4081;" id="audioOtherAnimBtnChart">🔊 Other</button>
+                        <button class="audio-btn" onclick="toggleAudio('animal_mix')"
+                            style="color:#fff;border-color:#fff;font-weight:700;" id="audioAnimalMixBtnChart">🔊 Play
+                            Mix</button>
+                    </div>
+                </div>
+                <div class="chart-wrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomBoth(1.2)">+</button>
+                        <button class="zoom-btn" onclick="zoomBoth(0.8)">−</button>
+                        <button class="zoom-btn" onclick="resetZoom()">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setZoomAxis('xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setZoomAxis('x',this)">X</button>
+                            <button class="axis-btn" onclick="setZoomAxis('y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="aiChart"></canvas>
+                </div>
+            </div>
+
+            <!-- ── PLAYBACK BAR ── -->
+            <div class="viewer-box" style="padding:9px 14px;">
+                <div class="playback-bar">
+                    <button class="play-btn play" onclick="play()">▶</button>
+                    <button class="play-btn pause" onclick="pause()">⏸</button>
+                    <button class="play-btn reset-pb" onclick="resetPlayback()">↺</button>
+                    <input type="range" class="pos-slider" id="posSlider" min="0" max="100" value="0"
+                        oninput="setPosition(this.value)">
+                    <div class="speed-wrap">
+                        <label>Speed:</label>
+                        <input type="range" min="0.1" max="5" step="0.1" value="1" oninput="setSpeed(this.value)">
+                        <span id="speedVal"
+                            style="color:var(--accent);font-size:.72rem;min-width:26px;font-family:'JetBrains Mono',monospace;">1×</span>
+                    </div>
+                    <div class="speed-wrap">
+                        <label>Win(s):</label>
+                        <input type="range" id="windowSlider" min="0.5" max="20" step="0.1" value="4"
+                            oninput="setWindowSize(this.value)">
+                        <span id="windowVal"
+                            style="color:var(--accent2);font-size:.72rem;min-width:30px;font-family:'JetBrains Mono',monospace;">4.0s</span>
+                    </div>
+                    <div class="time-display">
+                        <span class="status-pill stopped" id="statusPill">⏹ Stopped</span>
+                        <div id="timeDisplay">0.00s / 0.00s</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── FREQ CHART ── -->
+            <div class="viewer-box">
+                <div class="freq-header">
+                    <span class="viewer-title" style="color:var(--accent2);">📊 Fourier Frequency Domain</span>
+                    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                        <div class="speed-wrap">
+                            <label>Max Hz:</label>
+                            <input type="range" id="freqWindowSlider" min="10" max="500" step="5" value="250"
+                                oninput="setFreqWindow(this.value)">
+                            <span id="freqWindowVal"
+                                style="color:var(--accent2);font-size:.72rem;min-width:42px;font-family:'JetBrains Mono',monospace;">250
+                                Hz</span>
+                        </div>
+                        <div class="scale-btns">
+                            <button class="scale-btn active" onclick="setFreqScale('linear',this)">Linear</button>
+                            <button class="scale-btn" onclick="setFreqScale('audiogram',this)">Audiogram</button>
+                        </div>
+                        <div style="display:flex;gap:3px;">
+                            <button class="zoom-btn" style="position:static;" onclick="freqZoomIn()">+</button>
+                            <button class="zoom-btn" style="position:static;" onclick="freqZoomOut()">−</button>
+                            <button class="zoom-btn" style="position:static;" onclick="freqResetZoom()">↺</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="freq-chart-wrap"><canvas id="freqChart"></canvas></div>
+            </div>
+
+            <!-- ── SPECTROGRAMS ── -->
+            <div class="viewer-box">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <span class="viewer-title" style="color:#ff9f43;">🌈 Spectrograms &amp; Scalogram</span>
+                    <button class="spectro-toggle" id="spectroToggle" onclick="toggleSpectrograms()">Show Time-Frequency
+                        representations</button>
+                </div>
+                <div class="spectro-grid" id="spectroGrid" style="display:none;">
+                    <div class="spectro-box">
+                        <div class="spectro-label">Input Spectrogram</div><canvas id="spectroIn"></canvas>
+                    </div>
+                    <div class="spectro-box">
+                        <div class="spectro-label">Fourier Spectrogram</div><canvas id="spectroFft"></canvas>
+                    </div>
+                    <div class="spectro-box" id="scalogramBox">
+                        <div class="spectro-label">Wavelet Scalogram</div><canvas id="scalogramWav"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div><!-- end viewers-area -->
+    </div><!-- end main-grid -->
+
+    <script>
+        let currentMode = 'ecg';
+        const modeStates = { ecg: null, music: null, voices: null, animals: null, generic: null };
+
+        // ── AI data stores ──
+        let signalData = null, fftOutputSignal = null, wavOutputSignal = null;
+        let aiSignal = null, aiNoise = null;
+        let aiMaleData = null, aiFemaleData = null;
+        let aiStemsData = null;
+        let aiAnimalsData = null;
+        let aiEcgStemsData = null;
+
+        let freqGains = [], wavGains = [];
+        let isPlaying = false, position = 0, speed = 1, animId = null, lastFrameTime = null;
+        let windowSize = 2000, freqScale = 'linear', freqMaxHz = Infinity;
+        let cachedFreqs = null, cachedInMag = null, cachedOutMag = null;
+        let spectrogramsVisible = false;
+
+        let audioPlaying = {
+            input: false, fft: false, wav: false, ai: false,
+            male: false, female: false, voice_mix: false,
+            vocals: false, bass_kick: false, guitar: false, piano: false, other: false, music_mix: false,
+            bird: false, dog: false, cat: false, frog: false, animal_mix: false,
+            Normal: false, LBBB: false, RBBB: false, PVC: false, Other: false
+        };
+
+        // ── ECG stems config ──
+        const ECG_STEMS_META = {
+            Normal: { color: '#00e5ff', sliderId: 'ecgNormalGainSlider', valId: 'ecgNormalGainVal', label: 'Normal' },
+            LBBB: { color: '#ff6d00', sliderId: 'ecgLBBBGainSlider', valId: 'ecgLBBBGainVal', label: 'LBBB' },
+            RBBB: { color: '#ffea00', sliderId: 'ecgRBBBGainSlider', valId: 'ecgRBBBGainVal', label: 'RBBB' },
+            PVC: { color: '#00e676', sliderId: 'ecgPVCGainSlider', valId: 'ecgPVCGainVal', label: 'PVC' }
+            // Other: { color: '#aa00ff', sliderId: 'ecgOtherGainSlider', valId: 'ecgOtherGainVal', label: 'Other' },
+        };
+        const ECG_STEM_NAMES = ['Normal', 'LBBB', 'RBBB', 'PVC'];
+
+        const MODES = {
+            ecg: {
+                label: 'ECG Abnormalities', badge: 'ECG', badgeClass: 'badge-ecg',
+                uploadText: 'Upload ECG Signal', fileAccept: '.csv,.dat,.wav,.mp3',
+                optimalWavelet: 'db4',
+                freqSliders: [
+                    { name: 'Normal Sinus Rhythm', description: 'P-wave, QRS complex, T-wave components', ranges: [[0.5, 5], [5, 15], [15, 40]], default_gain: 1.0, color: '#00e676' },
+                    { name: 'Atrial Fibrillation', description: 'Irregular atrial / fibrillatory wave activity', ranges: [[4, 9], [150, 250], [300, 500]], default_gain: 1.0, color: '#ff4081' },
+                    { name: 'Ventricular Tachy.', description: 'Wide QRS with rapid ventricular rate', ranges: [[40, 100], [100, 250]], default_gain: 1.0, color: '#ffea00' },
+                    { name: 'Bradycardia', description: 'Slow heart-rate components', ranges: [[0.1, 0.5], [0.5, 2]], default_gain: 1.0, color: '#7c4dff' },
+                ],
+                wavSliders: [
+                    { name: 'Normal Sinus Rhythm', description: 'Low-freq QRS/T-wave wavelet coefficients', wavelet_levels: [4, 5], default_gain: 1.0, color: '#00e676' },
+                    { name: 'Atrial Fibrillation', description: 'Mid-freq fibrillatory wavelet components', wavelet_levels: [3, 4, 5], default_gain: 1.0, color: '#ff4081' },
+                    { name: 'Ventricular Tachy.', description: 'High-energy QRS wavelet bursts', wavelet_levels: [1, 2, 3], default_gain: 1.0, color: '#ffea00' },
+                    { name: 'Bradycardia', description: 'Ultra-low freq baseline wavelet components', wavelet_levels: [0, 1], default_gain: 1.0, color: '#7c4dff' },
+                ]
+            },
+            music: {
+                label: 'Musical Instruments', badge: 'MUSIC', badgeClass: 'badge-music',
+                uploadText: 'Upload Music Signal', fileAccept: '.csv,.dat,.wav,.mp3',
+                optimalWavelet: 'db4',
+                freqSliders: [
+                    { name: 'Bass / Kick Drum', description: 'Low-frequency bass body and kick drum punch', ranges: [[20, 60], [60, 120], [120, 200]], default_gain: 1.0, color: '#ff6d00' },
+                    { name: 'Guitar / Strings', description: 'Mid-range guitar body, string harmonics', ranges: [[200, 400], [400, 800], [800, 1600]], default_gain: 1.0, color: '#ffea00' },
+                    { name: 'Piano / Keys', description: 'Piano attack transients and mid-high harmonics', ranges: [[1600, 3200], [3200, 5000], [5000, 7000]], default_gain: 1.0, color: '#00e5ff' },
+                    { name: 'Vocals / Presence', description: 'Upper vocal presence and air frequencies', ranges: [[7000, 10000], [10000, 14000], [14000, 20000]], default_gain: 1.0, color: '#ff4081' },
+                ],
+                wavSliders: [
+                    { name: 'Bass / Kick Drum', description: 'Low-band wavelet transient energy', wavelet_levels: [0, 1], default_gain: 1.0, color: '#ff6d00' },
+                    { name: 'Guitar / Strings', description: 'Mid-band wavelet harmonics', wavelet_levels: [2, 3], default_gain: 1.0, color: '#ffea00' },
+                    { name: 'Piano / Keys', description: 'Upper-mid wavelet components', wavelet_levels: [4, 5], default_gain: 1.0, color: '#00e5ff' },
+                    { name: 'Vocals / Presence', description: 'High-freq presence and air', wavelet_levels: [6, 7, 8], default_gain: 1.0, color: '#ff4081' },
+                ]
+            },
+            voices: {
+                label: 'Human Voices', badge: 'VOICES', badgeClass: 'badge-voices',
+                uploadText: 'Upload Voice Recording', fileAccept: '.csv,.dat,.wav,.mp3',
+                optimalWavelet: 'haar',
+                freqSliders: [
+                    { name: 'Male (Low / Bass)', description: 'Deep male fundamentals and chest resonance', ranges: [[80, 160], [160, 300], [300, 500]], default_gain: 1.0, color: '#00b0ff' },
+                    { name: 'Male (Tenor / Mid)', description: 'Tenor & baritone upper harmonics and clarity', ranges: [[500, 900], [900, 1400], [1400, 2000]], default_gain: 1.0, color: '#ff6d00' },
+                    { name: 'Female (Alto / Low)', description: 'Alto & mezzo-soprano fundamentals', ranges: [[200, 400], [400, 700], [700, 1200]], default_gain: 1.0, color: '#00e676' },
+                    { name: 'Female (Soprano)', description: 'Soprano brightness, presence, harmonics', ranges: [[1200, 2500], [2500, 5000], [5000, 8000]], default_gain: 1.0, color: '#ff4081' },
+                ],
+                wavSliders: [
+                    { name: 'Male (Low / Bass)', description: 'Haar voiced low fundamentals', wavelet_levels: [0, 1, 2], default_gain: 1.0, color: '#00b0ff' },
+                    { name: 'Male (Tenor / Mid)', description: 'Haar mid-voice transitions', wavelet_levels: [3, 4], default_gain: 1.0, color: '#ff6d00' },
+                    { name: 'Female (Alto / Low)', description: 'Haar female voiced low band', wavelet_levels: [2, 3], default_gain: 1.0, color: '#00e676' },
+                    { name: 'Female (Soprano)', description: 'Haar high-freq sibilance & brightness', wavelet_levels: [5, 6, 7], default_gain: 1.0, color: '#ff4081' },
+                ]
+            },
+            animals: {
+                label: 'Animal Sounds', badge: 'ANIMALS', badgeClass: 'badge-animals',
+                uploadText: 'Upload Nature Recording', fileAccept: '.csv,.dat,.wav,.mp3',
+                optimalWavelet: 'coif3',
+                freqSliders: [
+                    { name: 'Bird', description: 'High frequency chirps and calls', ranges: [[2000, 8000]], default_gain: 1.0, color: '#00e5ff' },
+                    { name: 'Dog', description: 'Low to mid-range barks and growls', ranges: [[100, 1000]], default_gain: 1.0, color: '#ff6d00' },
+                    { name: 'Cat', description: 'Mid to high-range meows and purrs', ranges: [[400, 2000]], default_gain: 1.0, color: '#ffea00' },
+                    { name: 'Frog', description: 'Low frequency croaks', ranges: [[50, 400]], default_gain: 1.0, color: '#00e676' },
+                ],
+                wavSliders: [
+                    { name: 'Bird', description: 'High-frequency transient wavelet details', wavelet_levels: [6, 7, 8], default_gain: 1.0, color: '#00e5ff' },
+                    { name: 'Dog', description: 'Broadband bark impacts', wavelet_levels: [1, 2, 3], default_gain: 1.0, color: '#ff6d00' },
+                    { name: 'Cat', description: 'Harmonic meow components', wavelet_levels: [4, 5], default_gain: 1.0, color: '#ffea00' },
+                    { name: 'Frog', description: 'Low-frequency baseline rhythmic croaks', wavelet_levels: [0, 1], default_gain: 1.0, color: '#00e676' },
+                ]
+            },
+            generic: {
+                label: 'Generic Mode', badge: 'GENERIC', badgeClass: 'badge-music',
+                uploadText: 'Upload Any Signal', fileAccept: '.csv,.dat,.wav,.mp3',
+                optimalWavelet: 'db4', freqSliders: [], wavSliders: []
+            }
+        };
+
+        // ── State save / restore ──────────────────────────────────────────────
+        function saveState(mode) {
+            modeStates[mode] = {
+                signalData, fftOutputSignal, wavOutputSignal,
+                aiSignal, aiNoise, aiMaleData, aiFemaleData,
+                aiStemsData, aiAnimalsData, aiEcgStemsData,
+                freqGains: [...freqGains], wavGains: [...wavGains],
+                position, windowSize, freqScale, freqMaxHz,
+                cachedFreqs, cachedInMag, cachedOutMag
+            };
+        }
+
+        function restoreState(mode) {
+            const s = modeStates[mode];
+            if (!s || !s.signalData) {
+                signalData = null; fftOutputSignal = null; wavOutputSignal = null;
+                aiSignal = null; aiNoise = null; aiMaleData = null; aiFemaleData = null;
+                aiStemsData = null; aiAnimalsData = null; aiEcgStemsData = null;
+                freqGains = []; wavGains = [];
+                position = 0; windowSize = 2000; freqScale = 'linear'; freqMaxHz = Infinity;
+                cachedFreqs = null; cachedInMag = null; cachedOutMag = null;
+                document.getElementById('aiBox').style.display = 'none';
+            } else {
+                signalData = s.signalData; fftOutputSignal = s.fftOutputSignal; wavOutputSignal = s.wavOutputSignal;
+                aiSignal = s.aiSignal; aiNoise = s.aiNoise;
+                aiMaleData = s.aiMaleData || null; aiFemaleData = s.aiFemaleData || null;
+                aiStemsData = s.aiStemsData || null; aiAnimalsData = s.aiAnimalsData || null;
+                aiEcgStemsData = s.aiEcgStemsData || null;
+                freqGains = [...s.freqGains]; wavGains = [...s.wavGains];
+                position = s.position; windowSize = s.windowSize; freqScale = s.freqScale; freqMaxHz = s.freqMaxHz;
+                cachedFreqs = s.cachedFreqs; cachedInMag = s.cachedInMag; cachedOutMag = s.cachedOutMag;
+                MODES[mode].freqSliders.forEach((sl, i) => sl.current_gain = freqGains[i]);
+                MODES[mode].wavSliders.forEach((sl, i) => sl.current_gain = wavGains[i]);
+                const showAi = (aiSignal && mode === 'ecg') || (aiEcgStemsData && mode === 'ecg') ||
+                    (aiMaleData && mode === 'voices') || (aiStemsData && mode === 'music') ||
+                    (aiAnimalsData && mode === 'animals');
+                document.getElementById('aiBox').style.display = showAi ? 'block' : 'none';
+                document.getElementById('aiVoiceMixer').style.display = (aiMaleData && mode === 'voices') ? 'block' : 'none';
+                document.getElementById('aiMusicMixer').style.display = (aiStemsData && mode === 'music') ? 'block' : 'none';
+                document.getElementById('aiAnimalMixer').style.display = (aiAnimalsData && mode === 'animals') ? 'block' : 'none';
+                document.getElementById('aiEcgStemsMixer').style.display = (aiEcgStemsData && mode === 'ecg') ? 'block' : 'none';
+            }
+        }
+
+        function clearUI() {
+            [inputChart, fftChart, wavOutputChart, aiChart, freqChart].forEach(c => {
+                if (c) { c.data.datasets = []; c._rangeBands = []; c.update('none'); }
+            });
+            ['spectroIn', 'spectroFft', 'scalogramWav'].forEach(id => {
+                const cvs = document.getElementById(id);
+                if (cvs) cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
+            });
+            document.getElementById('infoBar').textContent = 'No signal loaded';
+            document.getElementById('timeDisplay').textContent = '0.00s / 0.00s';
+            document.getElementById('posSlider').value = 0;
+            document.getElementById('posSlider').max = 100;
+        }
+
+        // ── Chart setup ───────────────────────────────────────────────────────
+        function makeChartOpts() {
+            return {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'nearest', intersect: false }, parsing: false,
+                plugins: {
+                    legend: { display: true, labels: { color: '#cdd6f4', boxWidth: 12, usePointStyle: true, font: { family: 'Oxanium', size: 11 } } },
+                    decimation: { enabled: true, algorithm: 'lttb', samples: 800, threshold: 800 },
+                    zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy', drag: { enabled: false }, onZoomComplete: ({ chart }) => { syncCharts(chart, getOtherCharts(chart)); } }, pan: { enabled: false } }
+                },
+                scales: {
+                    x: { type: 'linear', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#6c7a96', maxTicksLimit: 10, callback: v => v.toFixed(2) }, title: { display: true, text: 'Time (s)', color: '#6c7a96' } },
+                    y: { type: 'linear', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#6c7a96' }, title: { display: true, text: 'Amplitude', color: '#6c7a96' } }
+                }
+            };
+        }
+
+        let inputChart = new Chart(document.getElementById('inputChart').getContext('2d'), { type: 'line', data: { datasets: [] }, options: makeChartOpts() });
+        let fftChart = new Chart(document.getElementById('fftChart').getContext('2d'), { type: 'line', data: { datasets: [] }, options: makeChartOpts() });
+        let wavOutputChart = new Chart(document.getElementById('wavOutputChart').getContext('2d'), { type: 'line', data: { datasets: [] }, options: makeChartOpts() });
+        let aiChart = new Chart(document.getElementById('aiChart').getContext('2d'), { type: 'line', data: { datasets: [] }, options: makeChartOpts() });
+
+        function getOtherCharts(c) { return [inputChart, fftChart, wavOutputChart, aiChart].filter(ch => ch !== c); }
+        attachPan(inputChart, c => syncCharts(c, getOtherCharts(c)));
+        attachPan(fftChart, c => syncCharts(c, getOtherCharts(c)));
+        attachPan(wavOutputChart, c => syncCharts(c, getOtherCharts(c)));
+        attachPan(aiChart, c => syncCharts(c, getOtherCharts(c)));
+
+        let freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+            type: 'line', data: { datasets: [] },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+                plugins: {
+                    legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                    zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy', drag: { enabled: false }, onZoomComplete: ({ chart }) => { freqZoomState.xMin = chart.options.scales.x.min; freqZoomState.xMax = chart.options.scales.x.max; freqZoomState.yMin = chart.options.scales.y.min; freqZoomState.yMax = chart.options.scales.y.max; } }, pan: { enabled: false } }
+                },
+                scales: {
+                    x: { type: 'linear', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#6c7a96', maxTicksLimit: 12 }, title: { display: true, text: 'Frequency (Hz)', color: '#6c7a96' } },
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#6c7a96' }, title: { display: true, text: 'Magnitude', color: '#6c7a96' } }
+                }
+            }
+        });
+        attachPan(freqChart, () => { freqZoomState.xMin = freqChart.options.scales.x.min; freqZoomState.xMax = freqChart.options.scales.x.max; freqZoomState.yMin = freqChart.options.scales.y.min; freqZoomState.yMax = freqChart.options.scales.y.max; });
+
+        function syncCharts(source, targets) { targets.forEach(t => { if (t.canvas.style.display !== 'none') { t.options.scales.x.min = source.scales.x.min; t.options.scales.x.max = source.scales.x.max; t.options.scales.y.min = source.scales.y.min; t.options.scales.y.max = source.scales.y.max; t.update('none'); } }); }
+        function zoomBoth(f) { inputChart.zoom(f); fftChart.zoom(f); if (currentMode !== 'generic') wavOutputChart.zoom(f); aiChart.zoom(f); syncCharts(inputChart, [fftChart, wavOutputChart, aiChart]); }
+        function resetZoom() { [inputChart, fftChart, wavOutputChart, aiChart].forEach(c => { c.resetZoom();['x', 'y'].forEach(ax => { c.options.scales[ax].min = c.options.scales[ax].max = undefined; }); c.update('none'); }); }
+        function setZoomAxis(mode, btn) { document.querySelectorAll('.axis-btn').forEach(b => { if (b.textContent.toLowerCase() === mode.toLowerCase()) b.classList.add('active'); else b.classList.remove('active'); });[inputChart, fftChart, wavOutputChart, aiChart].forEach(c => { if (c) { c.options.plugins.zoom.zoom.mode = mode; c.update('none'); } }); }
+
+        // ── Mode switching ────────────────────────────────────────────────────
+        function switchMode(mode, btn) {
+            saveState(currentMode); currentMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById('uploadLabelText').textContent = MODES[mode].uploadText;
+            document.getElementById('fileInput').value = '';
+            document.getElementById('fileInput').accept = MODES[mode].fileAccept;
+            const badge = document.getElementById('modeBadge');
+            badge.textContent = MODES[mode].badge; badge.className = 'mode-badge ' + MODES[mode].badgeClass;
+            document.getElementById('waveletBadge').textContent = MODES[mode].optimalWavelet;
+            const isGen = mode === 'generic', isEcg = mode === 'ecg', isVoices = mode === 'voices', isMusic = mode === 'music', isAnimals = mode === 'animals';
+            document.getElementById('customBandForm').style.display = isGen ? 'block' : 'none';
+            document.getElementById('syntheticBtn').style.display = isGen ? 'inline-flex' : 'none';
+            document.getElementById('aiControlSection').style.display = (isEcg || isVoices || isMusic || isAnimals) ? 'block' : 'none';
+            const aiBtn = document.getElementById('aiProcessBtn');
+            if (aiBtn) {
+                if (isVoices) aiBtn.textContent = '🤖 Separate Male / Female Voices';
+                else if (isMusic) aiBtn.textContent = '🤖 Separate Instrument Stems';
+                else if (isAnimals) aiBtn.textContent = '🤖 Extract Animal Sounds (AI)';
+                else aiBtn.textContent = '🤖 Run ECG Label Analysis';
+            }
+            document.getElementById('aiBoxAudioEcg').style.display = (isEcg) ? 'block' : 'none';
+            document.getElementById('aiBoxAudioEcgStems').style.display = 'none';
+            document.getElementById('aiBoxAudioVoices').style.display = isVoices ? 'flex' : 'none';
+            document.getElementById('aiBoxAudioMusic').style.display = isMusic ? 'flex' : 'none';
+            document.getElementById('aiBoxAudioAnimals').style.display = isAnimals ? 'flex' : 'none';
+            if (isVoices) document.getElementById('aiBoxTitle').textContent = '🤖 AI Voice Separation';
+            else if (isMusic) document.getElementById('aiBoxTitle').textContent = '🤖 AI Stem Separation';
+            else if (isAnimals) document.getElementById('aiBoxTitle').textContent = '🤖 AI Animal Separation';
+            else document.getElementById('aiBoxTitle').textContent = '🤖 AI ECG Label Analysis';
+            document.getElementById('wavDomainSection').style.display = isGen ? 'none' : 'flex';
+            document.getElementById('wavOutputBox').style.display = isGen ? 'none' : 'block';
+            document.getElementById('scalogramBox').style.display = isGen ? 'none' : 'block';
+            document.getElementById('spectroGrid').style.gridTemplateColumns = isGen ? '1fr 1fr' : '1fr 1fr 1fr';
+            stop();
+            Object.keys(audioPlaying).forEach(k => { if (audioPlaying[k] && audioPlaying[k].pause) { audioPlaying[k].pause(); audioPlaying[k] = false; } });
+            document.querySelectorAll('.audio-btn').forEach(b => { b.textContent = b.textContent.replace('⏹ Stop', '🔊 Play Audio'); b.classList.remove('playing'); });
+            clearUI(); restoreState(mode); buildSliders();
+            if (signalData) {
+                document.getElementById('infoBar').textContent = `${signalData.sr} Hz · ${signalData.duration.toFixed(1)}s · ${signalData.n_samples} samples`;
+                const ws = document.getElementById('windowSlider');
+                ws.min = Math.max(0.5, parseFloat((signalData.duration / 40).toFixed(2)));
+                ws.max = signalData.duration.toFixed(1); ws.value = windowSize / signalData.sr;
+                document.getElementById('windowVal').textContent = (windowSize / signalData.sr).toFixed(1) + 's';
+                const fws = document.getElementById('freqWindowSlider'), nyq = signalData.sr / 2;
+                fws.min = 5; fws.max = nyq; fws.step = Math.max(1, Math.round(nyq / 100));
+                fws.value = freqMaxHz === Infinity ? nyq : freqMaxHz;
+                document.getElementById('freqWindowVal').textContent = (freqMaxHz === Infinity ? nyq : freqMaxHz) + ' Hz';
+                updateViewers();
+                if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag);
+                if (spectrogramsVisible) updateSpectrograms();
+            }
+        }
+
+        // ── Generic band ──────────────────────────────────────────────────────
+        function addGenericBand() {
+            const minHz = parseFloat(document.getElementById('cMin').value), maxHz = parseFloat(document.getElementById('cMax').value);
+            if (isNaN(minHz) || isNaN(maxHz) || minHz >= maxHz) return alert("Please enter a valid frequency range (Min < Max).");
+            const colors = ['#00e5ff', '#00e676', '#ffea00', '#ff6d00', '#ff4081', '#7c4dff'];
+            const clr = colors[MODES['generic'].freqSliders.length % colors.length];
+            MODES['generic'].freqSliders.push({ name: `Band ${minHz}-${maxHz} Hz`, description: 'Custom added band', ranges: [[minHz, maxHz]], default_gain: 1.0, color: clr });
+            document.getElementById('cMin').value = ''; document.getElementById('cMax').value = '';
+            buildSliders(); if (signalData) applyFreqEqualization();
+        }
+        function deleteGenericBand(index) { MODES['generic'].freqSliders.splice(index, 1); buildSliders(); if (signalData) applyFreqEqualization(); }
+
+        // ── File upload / synthetic ───────────────────────────────────────────
+        async function generateSynthetic() {
+            document.getElementById('infoBar').textContent = 'Generating Synthetic Signal...';
+            try {
+                const res = await fetch('/api/synthetic', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: currentMode }) });
+                if (!res.ok) throw new Error(`Server returned status: ${res.status}`);
+                const data = await res.json();
+                if (data.success) {
+                    signalData = data; fftOutputSignal = [...data.signal]; wavOutputSignal = [...data.signal];
+                    aiSignal = null; aiNoise = null; aiMaleData = null; aiFemaleData = null; aiStemsData = null; aiAnimalsData = null; aiEcgStemsData = null;
+                    document.getElementById('aiBox').style.display = 'none';
+                    hideAllMixers(); onSignalLoaded();
+                } else document.getElementById('infoBar').textContent = 'Error: ' + data.error;
+            } catch (e) { document.getElementById('infoBar').textContent = 'Generation failed: ' + e.message; }
+        }
+
+        async function loadFile(event) {
+            const file = event.target.files[0]; if (!file) return;
+            document.getElementById('infoBar').textContent = 'Loading...';
+            const fd = new FormData(); fd.append('file', file); fd.append('mode', currentMode);
+            try {
+                const res = await fetch('/api/upload', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data.success) {
+                    signalData = data; fftOutputSignal = [...data.signal]; wavOutputSignal = [...data.signal];
+                    aiSignal = null; aiNoise = null; aiMaleData = null; aiFemaleData = null; aiStemsData = null; aiAnimalsData = null; aiEcgStemsData = null;
+                    document.getElementById('aiBox').style.display = 'none';
+                    hideAllMixers(); onSignalLoaded();
+                } else document.getElementById('infoBar').textContent = 'Error: ' + data.error;
+            } catch (e) { document.getElementById('infoBar').textContent = 'Upload failed: ' + e.message; }
+        }
+
+        function hideAllMixers() {
+            ['aiVoiceMixer', 'aiMusicMixer', 'aiAnimalMixer', 'aiEcgStemsMixer'].forEach(id => document.getElementById(id).style.display = 'none');
+        }
+
+        function onSignalLoaded() {
+            const initSec = Math.min(2, signalData.duration);
+            windowSize = Math.floor(signalData.sr * initSec); position = 0;
+            const ws = document.getElementById('windowSlider');
+            ws.min = Math.max(0.5, parseFloat((signalData.duration / 40).toFixed(2)));
+            ws.max = signalData.duration.toFixed(1); ws.value = initSec;
+            document.getElementById('windowVal').textContent = initSec.toFixed(1) + 's';
+            document.getElementById('posSlider').max = Math.max(0, signalData.n_samples - windowSize);
+            document.getElementById('posSlider').value = 0;
+            document.getElementById('infoBar').textContent = `${signalData.sr} Hz · ${signalData.duration.toFixed(1)}s · ${signalData.n_samples} samples`;
+            const nyq = signalData.sr / 2, fws = document.getElementById('freqWindowSlider');
+            fws.min = 5; fws.max = nyq; fws.step = Math.max(1, Math.round(nyq / 100)); fws.value = nyq;
+            freqMaxHz = nyq; document.getElementById('freqWindowVal').textContent = nyq + ' Hz';
+            updateViewers(); applyFreqEqualization(); if (currentMode !== 'generic') applyWaveletEqualization();
+        }
+
+        // ── AI processing ─────────────────────────────────────────────────────
+        async function applyAIModel() {
+            if (!signalData) return;
+            const btn = document.getElementById('aiProcessBtn');
+            const isVoices = currentMode === 'voices', isMusic = currentMode === 'music', isAnimals = currentMode === 'animals';
+            btn.disabled = true;
+            if (isVoices) btn.textContent = '⏳ Separating Voices...';
+            else if (isMusic) btn.textContent = '⏳ Separating Stems...';
+            else if (isAnimals) btn.textContent = '⏳ Extracting Animal Sounds...';
+            else btn.textContent = '⏳ Analysing ECG Labels...';
+            document.getElementById('infoBar').textContent = 'Running AI...';
+            try {
+                const res = await fetch('/api/ai_process', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: currentMode }) });
+                const data = await res.json();
+                if (data.success) {
+                    // ECG stems
+                    if (data.is_ecg_stems) {
+                        aiEcgStemsData = data.stems; aiSignal = null; aiNoise = null; aiMaleData = null; aiFemaleData = null; aiStemsData = null; aiAnimalsData = null;
+                        document.getElementById('aiBox').style.display = 'block';
+                        document.getElementById('aiBoxTitle').textContent = '🤖 AI ECG Label Analysis';
+                        document.getElementById('aiBoxAudioEcg').style.display = 'none';
+                        document.getElementById('aiBoxAudioEcgStems').style.display = 'flex';
+                        document.getElementById('aiBoxAudioVoices').style.display = 'none';
+                        document.getElementById('aiBoxAudioMusic').style.display = 'none';
+                        document.getElementById('aiBoxAudioAnimals').style.display = 'none';
+                        hideAllMixers();
+                        document.getElementById('aiEcgStemsMixer').style.display = 'block';
+                        updateAiEcgStemsMix();
+                        document.getElementById('infoBar').textContent = 'ECG Label Analysis Complete.';
+
+                        // ECG fallback
+                    } else if (!data.is_voices && !data.is_music && !data.is_animals && !data.is_ecg_stems) {
+                        aiEcgStemsData = null; aiMaleData = null; aiFemaleData = null; aiStemsData = null; aiAnimalsData = null;
+                        aiSignal = data.output; aiNoise = data.removed_arrth || data.removed_noise;
+                        document.getElementById('aiBox').style.display = 'block';
+                        document.getElementById('aiBoxTitle').textContent = '🤖 AI Denoised Output';
+                        document.getElementById('aiBoxAudioEcg').style.display = 'block';
+                        document.getElementById('aiBoxAudioEcgStems').style.display = 'none';
+                        document.getElementById('aiBoxAudioVoices').style.display = 'none';
+                        document.getElementById('aiBoxAudioMusic').style.display = 'none';
+                        document.getElementById('aiBoxAudioAnimals').style.display = 'none';
+                        hideAllMixers(); updateViewers();
+                        if (data.frequencies) updateFreqChart(data.frequencies, data.input_magnitude, data.output_magnitude);
+                        if (spectrogramsVisible) updateSpectrograms();
+                        document.getElementById('infoBar').textContent = 'AI Denoising Applied.';
+
+                        // Voices
+                    } else if (data.is_voices) {
+                        aiMaleData = data.male; aiFemaleData = data.female; aiSignal = null; aiNoise = null; aiStemsData = null; aiAnimalsData = null; aiEcgStemsData = null;
+                        document.getElementById('aiBox').style.display = 'block';
+                        document.getElementById('aiBoxAudioEcg').style.display = 'none';
+                        document.getElementById('aiBoxAudioEcgStems').style.display = 'none';
+                        document.getElementById('aiBoxAudioVoices').style.display = 'flex';
+                        document.getElementById('aiBoxAudioMusic').style.display = 'none';
+                        document.getElementById('aiBoxAudioAnimals').style.display = 'none';
+                        hideAllMixers();
+                        document.getElementById('aiVoiceMixer').style.display = 'block';
+                        updateAiVoiceMix();
+                        document.getElementById('infoBar').textContent = 'Voice Separation Complete.';
+
+                        // Music
+                    } else if (data.is_music) {
+                        aiStemsData = data.stems; aiMaleData = null; aiFemaleData = null; aiSignal = null; aiNoise = null; aiAnimalsData = null; aiEcgStemsData = null;
+                        document.getElementById('aiBox').style.display = 'block';
+                        document.getElementById('aiBoxAudioEcg').style.display = 'none';
+                        document.getElementById('aiBoxAudioEcgStems').style.display = 'none';
+                        document.getElementById('aiBoxAudioVoices').style.display = 'none';
+                        document.getElementById('aiBoxAudioMusic').style.display = 'flex';
+                        document.getElementById('aiBoxAudioAnimals').style.display = 'none';
+                        hideAllMixers();
+                        document.getElementById('aiMusicMixer').style.display = 'block';
+                        updateAiMusicMix();
+                        document.getElementById('infoBar').textContent = 'Stem Separation Complete.';
+
+                        // Animals
+                    } else if (data.is_animals) {
+                        aiAnimalsData = data.stems; aiMaleData = null; aiFemaleData = null; aiSignal = null; aiNoise = null; aiStemsData = null; aiEcgStemsData = null;
+                        document.getElementById('aiBox').style.display = 'block';
+                        document.getElementById('aiBoxAudioEcg').style.display = 'none';
+                        document.getElementById('aiBoxAudioEcgStems').style.display = 'none';
+                        document.getElementById('aiBoxAudioVoices').style.display = 'none';
+                        document.getElementById('aiBoxAudioMusic').style.display = 'none';
+                        document.getElementById('aiBoxAudioAnimals').style.display = 'flex';
+                        hideAllMixers();
+                        document.getElementById('aiAnimalMixer').style.display = 'block';
+                        updateAiAnimalMix();
+                        document.getElementById('infoBar').textContent = 'Animal Isolation Complete.';
+                    }
+                } else {
+                    document.getElementById('infoBar').textContent = 'AI Error: ' + data.error;
+                }
+            } catch (e) {
+                console.error(e); document.getElementById('infoBar').textContent = 'AI Request Failed.';
+            } finally {
+                btn.disabled = false;
+                if (currentMode === 'voices') btn.textContent = '🤖 Separate Male / Female Voices';
+                else if (currentMode === 'music') btn.textContent = '🤖 Separate Instrument Stems';
+                else if (currentMode === 'animals') btn.textContent = '🤖 Extract Animal Sounds (AI)';
+                else btn.textContent = '🤖 Run ECG Label Analysis';
+            }
+        }
+
+        // ── ECG Stems mix ─────────────────────────────────────────────────────
+        function updateAiEcgStemsMix() {
+            if (!aiEcgStemsData) return;
+            const gains = {};
+            ECG_STEM_NAMES.forEach(name => {
+                const g = parseFloat(document.getElementById(ECG_STEMS_META[name].sliderId).value);
+                document.getElementById(ECG_STEMS_META[name].valId).textContent = g.toFixed(2);
+                gains[name] = g;
+            });
+            const nPts = aiEcgStemsData[ECG_STEM_NAMES[0]].length;
+            const timeStep = Math.floor(signalData.n_samples / nPts) || 1;
+            const stemPoints = {}, mixArr = new Array(nPts).fill(0);
+            ECG_STEM_NAMES.forEach(name => {
+                stemPoints[name] = [];
+                const arr = aiEcgStemsData[name];
+                for (let i = 0; i < nPts; i++) {
+                    const tIdx = Math.min(i * timeStep, signalData.time.length - 1);
+                    const x = signalData.time[tIdx], y = arr[i] * gains[name];
+                    stemPoints[name].push({ x, y }); mixArr[i] += y;
+                }
+            });
+            const mixPoints = stemPoints[ECG_STEM_NAMES[0]].map((pt, i) => ({ x: pt.x, y: mixArr[i] }));
+            const datasets = ECG_STEM_NAMES.map(name => ({
+                label: ECG_STEMS_META[name].label, data: stemPoints[name],
+                borderColor: ECG_STEMS_META[name].color, borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0
+            }));
+            datasets.push({ label: 'Mixed (reconstructed)', data: mixPoints, borderColor: '#ffffff', borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0, borderDash: [3, 3] });
+            aiChart.data.datasets = datasets; aiChart.update('none');
+        }
+
+        // ── Voice mix ─────────────────────────────────────────────────────────
+        let voiceMixTimeout = null;
+        function updateAiVoiceMix() {
+            if (!aiMaleData || !aiFemaleData) return;
+            const mGain = parseFloat(document.getElementById('maleGainSlider').value);
+            const fGain = parseFloat(document.getElementById('femGainSlider').value);
+            document.getElementById('maleGainVal').textContent = mGain.toFixed(1);
+            document.getElementById('femGainVal').textContent = fGain.toFixed(1);
+            const malePoints = [], femalePoints = [], mixPoints = [];
+            const step = Math.floor(signalData.n_samples / aiMaleData.length) || 1;
+            for (let i = 0; i < aiMaleData.length; i++) {
+                const tIdx = Math.min(i * step, signalData.time.length - 1), x = signalData.time[tIdx];
+                const mVal = aiMaleData[i] * mGain, fVal = aiFemaleData[i] * fGain;
+                malePoints.push({ x, y: mVal }); femalePoints.push({ x, y: fVal }); mixPoints.push({ x, y: mVal + fVal });
+            }
+            aiChart.data.datasets = [
+                { label: 'Male Voice', data: malePoints, borderColor: '#00b0ff', borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0 },
+                { label: 'Female Voice', data: femalePoints, borderColor: '#ff4081', borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0 },
+                { label: 'Mixed Output', data: mixPoints, borderColor: '#ffffff', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0, borderDash: [3, 3] }
+            ];
+            aiChart.update('none');
+            clearTimeout(voiceMixTimeout);
+            voiceMixTimeout = setTimeout(async () => {
+                try {
+                    await fetch('/api/mix_voice_stems', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ gains: { male: mGain, female: fGain } }) });
+                    refreshPlayingAudio('voice_mix');
+                } catch (e) { console.error('Voice mix failed:', e); }
+            }, 150);
+        }
+
+        // ── Music mix ─────────────────────────────────────────────────────────
+        const STEM_META = {
+            vocals: { color: '#ff4081', sliderId: 'vocalsGainSlider', valId: 'vocalsGainVal', label: 'Vocals' },
+            bass_kick: { color: '#ff6d00', sliderId: 'bassKickGainSlider', valId: 'bassKickGainVal', label: 'Bass / Kick Drum' },
+            guitar: { color: '#ffea00', sliderId: 'guitarGainSlider', valId: 'guitarGainVal', label: 'Guitar / Strings' },
+            piano: { color: '#00e5ff', sliderId: 'pianoGainSlider', valId: 'pianoGainVal', label: 'Piano / Keys' },
+            other: { color: '#00e676', sliderId: 'otherGainSlider', valId: 'otherGainVal', label: 'Other' },
+        };
+        let musicMixTimeout = null;
+        function updateAiMusicMix() {
+            if (!aiStemsData) return;
+            const stemNames = ['vocals', 'bass_kick', 'guitar', 'piano', 'other'];
+            const gains = {};
+            stemNames.forEach(name => {
+                const g = parseFloat(document.getElementById(STEM_META[name].sliderId).value);
+                document.getElementById(STEM_META[name].valId).textContent = g.toFixed(2); gains[name] = g;
+            });
+            const nPts = aiStemsData[stemNames[0]].length, timeStep = Math.floor(signalData.n_samples / nPts) || 1;
+            const stemPoints = {}, mixArr = new Array(nPts).fill(0);
+            stemNames.forEach(name => {
+                stemPoints[name] = []; const arr = aiStemsData[name];
+                for (let i = 0; i < nPts; i++) { const tIdx = Math.min(i * timeStep, signalData.time.length - 1); const x = signalData.time[tIdx], y = arr[i] * gains[name]; stemPoints[name].push({ x, y }); mixArr[i] += y; }
+            });
+            const mixPoints = stemPoints['vocals'].map((pt, i) => ({ x: pt.x, y: mixArr[i] }));
+            const datasets = stemNames.map(name => ({ label: STEM_META[name].label, data: stemPoints[name], borderColor: STEM_META[name].color, borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0 }));
+            datasets.push({ label: 'Mixed Output', data: mixPoints, borderColor: '#ffffff', borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0, borderDash: [3, 3] });
+            aiChart.data.datasets = datasets; aiChart.update('none');
+            clearTimeout(musicMixTimeout);
+            musicMixTimeout = setTimeout(async () => {
+                try {
+                    await fetch('/api/mix_music_stems', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ gains }) });
+                    refreshPlayingAudio('music_mix');
+                } catch (e) { console.error('Music mix failed:', e); }
+            }, 150);
+        }
+
+        // ── Animal mix ────────────────────────────────────────────────────────
+        const ANIMAL_META = {
+            bird: { color: '#00e5ff', sliderId: 'birdGainSlider', valId: 'birdGainVal', label: 'Bird' },
+            dog: { color: '#ff6d00', sliderId: 'dogGainSlider', valId: 'dogGainVal', label: 'Dog' },
+            cat: { color: '#ffea00', sliderId: 'catGainSlider', valId: 'catGainVal', label: 'Cat' },
+            frog: { color: '#00e676', sliderId: 'frogGainSlider', valId: 'frogGainVal', label: 'Frog' },
+            other: { color: '#ff4081', sliderId: 'otherAnimGainSlider', valId: 'otherAnimGainVal', label: 'Other' },
+        };
+        let animalMixTimeout = null;
+        function updateAiAnimalMix() {
+            if (!aiAnimalsData) return;
+            const stemNames = ['bird', 'dog', 'cat', 'frog', 'other'];
+            const gains = {};
+            stemNames.forEach(name => {
+                const g = parseFloat(document.getElementById(ANIMAL_META[name].sliderId).value);
+                document.getElementById(ANIMAL_META[name].valId).textContent = g.toFixed(2); gains[name] = g;
+            });
+            const nPts = aiAnimalsData[stemNames[0]].length, timeStep = Math.floor(signalData.n_samples / nPts) || 1;
+            const stemPoints = {}, mixArr = new Array(nPts).fill(0);
+            stemNames.forEach(name => {
+                stemPoints[name] = []; const arr = aiAnimalsData[name];
+                for (let i = 0; i < nPts; i++) { const tIdx = Math.min(i * timeStep, signalData.time.length - 1); const x = signalData.time[tIdx], y = arr[i] * gains[name]; stemPoints[name].push({ x, y }); mixArr[i] += y; }
+            });
+            const mixPoints = stemPoints['bird'].map((pt, i) => ({ x: pt.x, y: mixArr[i] }));
+            const datasets = stemNames.map(name => ({ label: ANIMAL_META[name].label, data: stemPoints[name], borderColor: ANIMAL_META[name].color, borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0 }));
+            datasets.push({ label: 'Mixed Output', data: mixPoints, borderColor: '#ffffff', borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0, borderDash: [3, 3] });
+            aiChart.data.datasets = datasets; aiChart.update('none');
+            clearTimeout(animalMixTimeout);
+            animalMixTimeout = setTimeout(async () => {
+                try {
+                    await fetch('/api/mix_animal_stems', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ gains }) });
+                    refreshPlayingAudio('animal_mix');
+                } catch (e) { console.error('Animal mix failed:', e); }
+            }, 150);
+        }
+
+        // ── Sliders ───────────────────────────────────────────────────────────
+        function buildSliders() {
+            buildSliderGroup('freqSlidersContainer', MODES[currentMode].freqSliders, freqGains, 'freq');
+            if (currentMode !== 'generic') buildSliderGroup('wavSlidersContainer', MODES[currentMode].wavSliders, wavGains, 'wav');
+        }
+        function buildSliderGroup(containerId, sliders, gainsArr, prefix) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = ''; gainsArr.length = 0;
+            sliders.forEach((s, i) => {
+                const gv = s.current_gain != null ? s.current_gain : (s.default_gain || 1.0);
+                gainsArr.push(gv);
+                const color = s.color || '#00e5ff';
+                const rangeStr = prefix === 'freq' ? s.ranges.map(r => `${r[0]}–${r[1]} Hz`).join(', ') : `levels: ${s.wavelet_levels.join(', ')}`;
+                const delBtn = (currentMode === 'generic' && prefix === 'freq') ? `<button onclick="deleteGenericBand(${i})" style="background:transparent;border:none;color:#ff4081;cursor:pointer;margin-left:8px;font-weight:bold;">✕</button>` : '';
+                container.innerHTML += `
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span style="color:${color};">● ${s.name} ${delBtn}</span>
+                        <span class="val" id="${prefix}-gain-val-${i}">${gv.toFixed(2)}</span>
+                    </div>
+                    <input type="range" min="0" max="2" step="0.01" value="${gv}" style="accent-color:${color}" oninput="setGain('${prefix}',${i},this.value)">
+                    <div class="slider-desc">${s.description || ''}<br><span style="color:#2a3548;">${rangeStr}</span></div>
+                </div>`;
+            });
+        }
+        function setGain(domain, index, value) {
+            const g = parseFloat(value);
+            document.getElementById(`${domain}-gain-val-${index}`).textContent = g.toFixed(2);
+            if (domain === 'freq') { freqGains[index] = g; applyFreqEqualization(); }
+            else { wavGains[index] = g; applyWaveletEqualization(); }
+        }
+        function resetFreqEqualizer() {
+            MODES[currentMode].freqSliders.forEach((s, i) => {
+                const def = s.default_gain || 1.0; freqGains[i] = def;
+                document.getElementById(`freq-gain-val-${i}`).textContent = def.toFixed(2);
+                document.querySelectorAll('#freqSlidersContainer .slider-group input[type="range"]')[i].value = def;
+            }); applyFreqEqualization();
+        }
+        function resetWavEqualizer() {
+            MODES[currentMode].wavSliders.forEach((s, i) => {
+                const def = s.default_gain || 1.0; wavGains[i] = def;
+                document.getElementById(`wav-gain-val-${i}`).textContent = def.toFixed(2);
+                document.querySelectorAll('#wavSlidersContainer .slider-group input[type="range"]')[i].value = def;
+            }); applyWaveletEqualization();
+        }
+
+        // ── Equalization ──────────────────────────────────────────────────────
+        let freqEqTimeout = null;
+        function applyFreqEqualization() {
+            if (!signalData) return;
+            clearTimeout(freqEqTimeout);
+            freqEqTimeout = setTimeout(async () => {
+                try {
+                    const res = await fetch('/api/equalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ gains: freqGains, sliders: MODES[currentMode].freqSliders, mode: currentMode }) });
+                    const data = await res.json();
+                    if (data.success) { fftOutputSignal = data.output; updateViewers(); updateFreqChart(data.frequencies, data.input_magnitude, data.output_magnitude); if (spectrogramsVisible) updateSpectrograms(); refreshPlayingAudio('fft'); }
+                } catch (e) { console.error('Freq EQ failed:', e); }
+            }, 150);
+        }
+        let wavEqTimeout = null;
+        function applyWaveletEqualization() {
+            if (!signalData || currentMode === 'generic') return;
+            clearTimeout(wavEqTimeout);
+            wavEqTimeout = setTimeout(async () => {
+                try {
+                    const res = await fetch('/api/wavelet_equalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ gains: wavGains, sliders: MODES[currentMode].wavSliders, mode: currentMode }) });
+                    const data = await res.json();
+                    if (data.success) { wavOutputSignal = data.output; updateViewers(); if (spectrogramsVisible) updateSpectrograms(); refreshPlayingAudio('wav'); }
+                } catch (e) { console.error('Wavelet EQ failed:', e); }
+            }, 200);
+        }
+
+        // ── Viewers update ────────────────────────────────────────────────────
+        function updateViewers() {
+            if (!signalData) return;
+            const start = Math.floor(position), end = Math.min(start + windowSize, signalData.n_samples);
+            const inData = [], fftData = [], wavData = [], aiData = [], aiNoiseData = [];
+            const fftSrc = fftOutputSignal || signalData.signal, wavSrc = wavOutputSignal || signalData.signal;
+            for (let i = start; i < end; i++) {
+                const x = signalData.time[i];
+                inData.push({ x, y: signalData.signal[i] }); fftData.push({ x, y: fftSrc[i] });
+                if (currentMode !== 'generic') wavData.push({ x, y: wavSrc[i] });
+                if (aiSignal && currentMode === 'ecg') { aiData.push({ x, y: aiSignal[i] }); if (aiNoise) aiNoiseData.push({ x, y: aiNoise[i] }); }
+            }
+            const xMin = signalData.time[start], xMax = xMin + windowSize / signalData.sr;
+            inputChart.data.datasets = [{ label: 'Input Signal', data: inData, borderColor: '#00e5ff', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }];
+            inputChart.options.scales.x.min = xMin; inputChart.options.scales.x.max = xMax; inputChart.update('none');
+            fftChart.data.datasets = [{ label: 'Fourier Output', data: fftData, borderColor: '#00e676', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }];
+            fftChart.options.scales.x.min = xMin; fftChart.options.scales.x.max = xMax; fftChart.update('none');
+            if (currentMode !== 'generic') {
+                wavOutputChart.data.datasets = [{ label: 'Wavelet Output', data: wavData, borderColor: '#ff9f43', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }];
+                wavOutputChart.options.scales.x.min = xMin; wavOutputChart.options.scales.x.max = xMax; wavOutputChart.update('none');
+            }
+            if (currentMode === 'ecg') {
+                if (aiEcgStemsData) { updateAiEcgStemsMix(); }
+                else if (aiSignal) {
+                    const ds = [{ label: 'AI Cleaned Signal', data: aiData, borderColor: '#00e5ff', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }];
+                    if (aiNoise) ds.push({ label: 'AI Removed', data: aiNoiseData, borderColor: '#ff4081', borderWidth: 1.2, borderDash: [4, 4], pointRadius: 0, fill: false, tension: 0 });
+                    aiChart.data.datasets = ds; aiChart.options.scales.x.min = xMin; aiChart.options.scales.x.max = xMax; aiChart.update('none');
+                }
+            } else if (currentMode === 'voices' && aiMaleData && aiFemaleData) { updateAiVoiceMix(); }
+            else if (currentMode === 'music' && aiStemsData) { updateAiMusicMix(); }
+            else if (currentMode === 'animals' && aiAnimalsData) { updateAiAnimalMix(); }
+            syncCharts(inputChart, [fftChart, wavOutputChart, aiChart]);
+        }
+
+        // ── Freq chart ────────────────────────────────────────────────────────
+        function hexToRgba(hex, alpha) { const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16); return `rgba(${r},${g},${b},${alpha})`; }
+        const rangeBandPlugin = {
+            id: 'rangeBands',
+            beforeDatasetsDraw(chart) {
+                if (!chart._rangeBands || !chart._rangeBands.length) return;
+                const { ctx, chartArea, scales: { x, y } } = chart;
+                if (!x || !y || !chartArea) return;
+                ctx.save(); ctx.beginPath(); ctx.rect(chartArea.left, chartArea.top, chartArea.width, chartArea.height); ctx.clip();
+                chart._rangeBands.forEach(({ lo, hi, color }) => {
+                    const x0 = x.getPixelForValue(lo), x1 = x.getPixelForValue(hi);
+                    ctx.fillStyle = hexToRgba(color, 0.08); ctx.fillRect(x0, chartArea.top, x1 - x0, chartArea.height);
+                    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+                    ctx.moveTo(x0, chartArea.top); ctx.lineTo(x0, chartArea.bottom);
+                    ctx.moveTo(x1, chartArea.top); ctx.lineTo(x1, chartArea.bottom); ctx.stroke();
+                });
+                ctx.restore();
+            }
+        };
+        Chart.register(rangeBandPlugin);
+        function buildRangeBands(minHz, maxHz) {
+            if (!signalData) return [];
+            const bands = [];
+            (MODES[currentMode].freqSliders || []).forEach(s => {
+                s.ranges.forEach(r => { const lo = Math.max(r[0], minHz), hi = Math.min(r[1], maxHz); if (lo < hi) bands.push({ lo, hi, color: s.color || '#00e5ff' }); });
+            }); return bands;
+        }
+        let freqZoomState = { xMin: undefined, xMax: undefined, yMin: undefined, yMax: undefined };
+        function applyFreqZoomState() { freqChart.options.scales.x.min = freqZoomState.xMin; freqChart.options.scales.x.max = freqZoomState.xMax; freqChart.options.scales.y.min = freqZoomState.yMin; freqChart.options.scales.y.max = freqZoomState.yMax; }
+        function updateFreqChart(freqs, inMag, outMag) {
+            if (!freqs || !freqs.length) return;
+            cachedFreqs = freqs; cachedInMag = inMag; cachedOutMag = outMag;
+            const dataMaxHz = freqs[freqs.length - 1], dispMax = Math.min(freqMaxHz === Infinity ? dataMaxHz : freqMaxHz, dataMaxHz), dataMinHz = freqs[0] || 0;
+            function buildXY(mag) { const pts = []; for (let i = 0; i < freqs.length; i++) { if (freqScale === 'audiogram' && freqs[i] < 125) continue; if (freqs[i] > dispMax) break; pts.push({ x: freqs[i], y: mag[i] }); } return pts; }
+            const inPts = buildXY(inMag), outPts = buildXY(outMag);
+            if (freqChart.data.datasets.length < 2) {
+                freqChart.data.datasets = [
+                    { label: 'Input', data: inPts, borderColor: '#00e5ff', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 },
+                    { label: 'Output', data: outPts, borderColor: '#00e676', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }
+                ];
+            } else { freqChart.data.datasets[0].data = inPts; freqChart.data.datasets[1].data = outPts; }
+            const xs = freqChart.options.scales.x, ys = freqChart.options.scales.y;
+            if (freqScale === 'audiogram') {
+                const logMin = 125, logMax = 8000; const audioTicks = [125, 250, 500, 1000, 2000, 4000, 8000];
+                xs.type = 'logarithmic'; xs.title = { display: true, text: 'Frequency — Audiogram Scale (Hz)', color: '#6c7a96' };
+                xs.ticks = { color: '#6c7a96', autoSkip: false, maxRotation: 0, callback: function (value) { if (audioTicks.includes(Number(value))) return value >= 1000 ? (value / 1000) + 'k Hz' : value + ' Hz'; return null; } };
+                xs.afterBuildTicks = axis => { axis.ticks = audioTicks.map(v => ({ value: v })); };
+                if (xs._lastScaleType !== 'logarithmic') { freqZoomState = { xMin: logMin, xMax: logMax, yMin: undefined, yMax: undefined }; xs._lastScaleType = 'logarithmic'; }
+                xs.min = freqZoomState.xMin; xs.max = freqZoomState.xMax;
+                freqChart._rangeBands = buildRangeBands(logMin, logMax);
+            } else {
+                xs.type = 'linear'; xs.title = { display: true, text: 'Frequency (Hz)', color: '#6c7a96' };
+                xs.ticks = { color: '#6c7a96', maxTicksLimit: 12, callback: v => v >= 1000 ? (v / 1000).toFixed(1) + 'k Hz' : (v < 10 ? v.toFixed(2) : v.toFixed(0)) + ' Hz' };
+                delete xs.afterBuildTicks;
+                if (xs._lastScaleType !== 'linear') { freqZoomState = { xMin: dataMinHz, xMax: dispMax, yMin: undefined, yMax: undefined }; xs._lastScaleType = 'linear'; }
+                else { if (freqZoomState.xMin === undefined) freqZoomState.xMin = dataMinHz; if (freqZoomState.xMax === undefined) freqZoomState.xMax = dispMax; }
+                xs.min = freqZoomState.xMin; xs.max = freqZoomState.xMax;
+                freqChart._rangeBands = buildRangeBands(dataMinHz, dispMax);
+            }
+            ys.min = freqZoomState.yMin; ys.max = freqZoomState.yMax;
+            freqChart.update('none');
+        }
+        function freqZoomIn() { const xs = freqChart.scales.x, ys = freqChart.scales.y, f = 1 / 1.25; if (xs.type === 'logarithmic') { const lMin = Math.log10(xs.min), lMax = Math.log10(xs.max), lMid = (lMin + lMax) / 2, lHalf = (lMax - lMin) * f / 2; freqZoomState.xMin = Math.pow(10, lMid - lHalf); freqZoomState.xMax = Math.pow(10, lMid + lHalf); } else { const mid = (xs.min + xs.max) / 2, half = (xs.max - xs.min) * f / 2; freqZoomState.xMin = mid - half; freqZoomState.xMax = mid + half; } const yMid = (ys.min + ys.max) / 2, yHalf = (ys.max - ys.min) * f / 2; freqZoomState.yMin = yMid - yHalf; freqZoomState.yMax = yMid + yHalf; applyFreqZoomState(); freqChart.update('none'); }
+        function freqZoomOut() { const xs = freqChart.scales.x, ys = freqChart.scales.y, f = 1.25; if (xs.type === 'logarithmic') { const lMin = Math.log10(xs.min), lMax = Math.log10(xs.max), lMid = (lMin + lMax) / 2, lHalf = (lMax - lMin) * f / 2; freqZoomState.xMin = Math.pow(10, lMid - lHalf); freqZoomState.xMax = Math.pow(10, lMid + lHalf); } else { const mid = (xs.min + xs.max) / 2, half = (xs.max - xs.min) * f / 2; freqZoomState.xMin = mid - half; freqZoomState.xMax = mid + half; } const yMid = (ys.min + ys.max) / 2, yHalf = (ys.max - ys.min) * f / 2; freqZoomState.yMin = yMid - yHalf; freqZoomState.yMax = yMid + yHalf; applyFreqZoomState(); freqChart.update('none'); }
+        function freqResetZoom() { freqZoomState = { xMin: undefined, xMax: undefined, yMin: undefined, yMax: undefined }; if (freqChart.options.scales.x) freqChart.options.scales.x._lastScaleType = null; freqChart.options.scales.x.min = freqChart.options.scales.x.max = undefined; freqChart.options.scales.y.min = freqChart.options.scales.y.max = undefined; freqChart.resetZoom(); if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag); }
+        function setFreqScale(scale, btn) { freqScale = scale; btn.parentElement.querySelectorAll('.scale-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); freqZoomState = { xMin: undefined, xMax: undefined, yMin: undefined, yMax: undefined }; if (freqChart.options.scales.x) freqChart.options.scales.x._lastScaleType = null; if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag); }
+        function setFreqWindow(val) { freqMaxHz = parseFloat(val); document.getElementById('freqWindowVal').textContent = freqMaxHz + ' Hz'; freqZoomState.xMin = freqZoomState.xMax = undefined; if (freqChart.options.scales.x) freqChart.options.scales.x._lastScaleType = null; if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag); }
+
+        // ── Spectrograms ──────────────────────────────────────────────────────
+        function toggleSpectrograms() {
+            spectrogramsVisible = !spectrogramsVisible;
+            const grid = document.getElementById('spectroGrid'), btn = document.getElementById('spectroToggle');
+            grid.style.display = spectrogramsVisible ? 'grid' : 'none';
+            btn.textContent = spectrogramsVisible ? 'Hide Time-Frequency representations' : 'Show Time-Frequency representations';
+            btn.classList.toggle('active', spectrogramsVisible);
+            if (spectrogramsVisible) updateSpectrograms();
+        }
+        async function updateSpectrograms() {
+            if (!signalData) return;
+            try {
+                let promises = [fetch(`/api/spectrogram?which=input&mode=${currentMode}`), fetch(`/api/spectrogram?which=fft&mode=${currentMode}`)];
+                if (currentMode !== 'generic') promises.push(fetch(`/api/scalogram?which=wav&mode=${currentMode}`));
+                const responses = await Promise.all(promises);
+                const d1 = await responses[0].json(), d2 = await responses[1].json();
+                if (d1.success) drawSpectrogram('spectroIn', d1); if (d2.success) drawSpectrogram('spectroFft', d2);
+                if (currentMode !== 'generic') { const d3 = await responses[2].json(); if (d3.success) drawSpectrogram('scalogramWav', d3); }
+            } catch (e) { console.error('Spectrogram error:', e); }
+        }
+        function drawSpectrogram(canvasId, data) {
+            const canvas = document.getElementById(canvasId); if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const yArr = data.frequencies || data.scales; const nF = yArr ? yArr.length : 0; const nT = data.times.length;
+            if (nF === 0 || nT === 0) return;
+            const mL = 50, mB = 32, mT = 4, mR = 8; const dW = canvas.clientWidth || 500, dH = canvas.clientHeight || 300;
+            canvas.width = dW; canvas.height = dH; const pW = dW - mL - mR, pH = dH - mT - mB;
+            let gMin = Infinity, gMax = -Infinity;
+            for (let f = 0; f < nF; f++)for (let t = 0; t < nT; t++) { const v = data.magnitudes[f][t]; if (v < gMin) gMin = v; if (v > gMax) gMax = v; }
+            const range = gMax - gMin || 1;
+            const vir = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+            function vc(val) { val = Math.max(0, Math.min(1, val)); const idx = val * (vir.length - 1), lo = Math.floor(idx), hi = Math.min(lo + 1, vir.length - 1), fr = idx - lo; return [Math.round(vir[lo][0] * (1 - fr) + vir[hi][0] * fr), Math.round(vir[lo][1] * (1 - fr) + vir[hi][1] * fr), Math.round(vir[lo][2] * (1 - fr) + vir[hi][2] * fr)]; }
+            const ic = document.createElement('canvas'); ic.width = nT; ic.height = nF;
+            const ix = ic.getContext('2d'), id = ix.createImageData(nT, nF);
+            for (let f = 0; f < nF; f++)for (let t = 0; t < nT; t++) { const v = (data.magnitudes[nF - 1 - f][t] - gMin) / range, px = (f * nT + t) * 4, c = vc(v); id.data[px] = c[0]; id.data[px + 1] = c[1]; id.data[px + 2] = c[2]; id.data[px + 3] = 255; }
+            ix.putImageData(id, 0, 0); ctx.fillStyle = '#080b12'; ctx.fillRect(0, 0, dW, dH); ctx.drawImage(ic, mL, mT, pW, pH);
+            ctx.fillStyle = '#aaa'; ctx.strokeStyle = '#555'; ctx.lineWidth = 1; ctx.font = '10px JetBrains Mono,monospace'; ctx.textAlign = 'center';
+            const tMin = data.times[0], tMax = data.times[data.times.length - 1];
+            for (let i = 0; i <= 5; i++) { const fr = i / 5, x = mL + fr * pW, tv = tMin + fr * (tMax - tMin); ctx.beginPath(); ctx.moveTo(x, mT + pH); ctx.lineTo(x, mT + pH + 3); ctx.stroke(); ctx.fillText(tv.toFixed(1), x, mT + pH + 13); }
+            ctx.font = '10px JetBrains Mono,monospace'; ctx.textAlign = 'right'; ctx.fillStyle = '#aaa';
+            const fMin = yArr[0], fMax = yArr[yArr.length - 1];
+            for (let i = 0; i <= 4; i++) { const fr = i / 4, y = mT + pH - fr * pH, fv = fMin + fr * (fMax - fMin); ctx.beginPath(); ctx.moveTo(mL, y); ctx.lineTo(mL - 3, y); ctx.stroke(); ctx.fillText(fv.toFixed(0), mL - 5, y + 3); }
+            ctx.save(); ctx.translate(11, mT + pH / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center'; ctx.font = '10px JetBrains Mono,monospace'; ctx.fillStyle = '#6c7a96'; ctx.fillText('Freq (Hz)', 0, 0); ctx.restore();
+            ctx.fillStyle = '#6c7a96'; ctx.textAlign = 'center'; ctx.font = '10px JetBrains Mono,monospace'; ctx.fillText('Time (s)', mL + pW / 2, dH - 2);
+        }
+
+        // ── Playback ──────────────────────────────────────────────────────────
+        function play() { if (!signalData) return; isPlaying = true; lastFrameTime = null; setPill('▶ Playing', 'playing'); animId = requestAnimationFrame(animate); }
+        function pause() { isPlaying = false; lastFrameTime = null; setPill('⏸ Paused', 'paused'); if (animId) { cancelAnimationFrame(animId); animId = null; } }
+        function stop() { isPlaying = false; lastFrameTime = null; if (animId) { cancelAnimationFrame(animId); animId = null; } position = 0; document.getElementById('posSlider').value = 0; setPill('⏹ Stopped', 'stopped'); updateViewers(); updateTimeDisplay(); }
+        function resetPlayback() { stop(); resetZoom(); }
+        function setPosition(val) { position = parseInt(val); updateViewers(); updateTimeDisplay(); }
+        function setSpeed(val) { speed = parseFloat(val); document.getElementById('speedVal').textContent = speed.toFixed(1) + '×'; }
+        function setWindowSize(val) { if (!signalData) return; const sec = parseFloat(val); windowSize = Math.min(Math.floor(signalData.sr * sec), signalData.n_samples); document.getElementById('windowVal').textContent = sec.toFixed(1) + 's'; const posMax = Math.max(0, signalData.n_samples - windowSize); document.getElementById('posSlider').max = posMax; if (position > posMax) { position = posMax; document.getElementById('posSlider').value = position; } updateViewers(); }
+        function setPill(text, cls) { const p = document.getElementById('statusPill'); p.textContent = text; p.className = 'status-pill ' + cls; }
+        function animate(timestamp) {
+            if (!isPlaying || !signalData) return;
+            if (lastFrameTime === null) { lastFrameTime = timestamp; animId = requestAnimationFrame(animate); return; }
+            const elapsed = (timestamp - lastFrameTime) / 1000; lastFrameTime = timestamp; position += elapsed * signalData.sr * speed;
+            const maxPos = Math.max(0, signalData.n_samples - windowSize);
+            if (position >= maxPos) { position = 0; lastFrameTime = null; }
+            document.getElementById('posSlider').value = Math.floor(position); updateViewers(); updateTimeDisplay(); animId = requestAnimationFrame(animate);
+        }
+        function updateTimeDisplay() { if (!signalData) return; document.getElementById('timeDisplay').textContent = `${(Math.floor(position) / signalData.sr).toFixed(2)}s / ${signalData.duration.toFixed(2)}s`; }
+
+        // ── Audio playback ────────────────────────────────────────────────────
+        function refreshPlayingAudio(which) {
+            if (!audioPlaying[which]) return;
+            const currentAudio = audioPlaying[which];
+            currentAudio.pause();
+            const newAudio = new Audio(`/api/audio?which=${which}&mode=${currentMode}&t=${Date.now()}`);
+            audioPlaying[which] = newAudio;
+            newAudio.play();
+            const btnMap = { fft: 'audioFftBtn', wav: 'audioWavBtn', voice_mix: 'audioVoiceMixBtn', music_mix: 'audioMusicMixBtn', animal_mix: 'audioAnimalMixBtn' };
+            const btnId = btnMap[which];
+            if (btnId) {
+                document.querySelectorAll(`[id^="${btnId}"]`).forEach(b => { b.textContent = '⏹ Stop'; b.classList.add('playing'); });
+            }
+            newAudio.onended = () => {
+                audioPlaying[which] = false;
+                if (btnId) document.querySelectorAll(`[id^="${btnId}"]`).forEach(b => { b.textContent = '🔊 Play Mix'; b.classList.remove('playing'); });
+            };
+        }
+
+        function toggleAudio(which) {
+            const btnMap = {
+                input: 'audioInBtn', fft: 'audioFftBtn', wav: 'audioWavBtn', ai: 'audioAiBtn',
+                male: 'audioMaleBtn', female: 'audioFemaleBtn', voice_mix: 'audioVoiceMixBtn',
+                vocals: 'audioVocalsBtn', bass_kick: 'audioBassKickBtn', guitar: 'audioGuitarBtn', piano: 'audioPianoBtn', other: 'audioOtherBtn', music_mix: 'audioMusicMixBtn',
+                bird: 'audioBirdBtn', dog: 'audioDogBtn', cat: 'audioCatBtn', frog: 'audioFrogBtn', animal_mix: 'audioAnimalMixBtn',
+                Normal: 'audioEcgNormalBtn', LBBB: 'audioEcgLBBBBtn', RBBB: 'audioEcgRBBBBtn', PVC: 'audioEcgPVCBtn', Other: 'audioEcgOtherBtn'
+            };
+            const labelMap = {
+                male: '🔊 Male', female: '🔊 Female', voice_mix: '🔊 Play Mix',
+                vocals: '🔊 Vocals', bass_kick: '🔊 Bass/Kick', guitar: '🔊 Guitar', piano: '🔊 Piano', other: '🔊 Other', music_mix: '🔊 Play Mix',
+                bird: '🔊 Bird', dog: '🔊 Dog', cat: '🔊 Cat', frog: '🔊 Frog', animal_mix: '🔊 Play Mix',
+                Normal: '🔊 Normal', LBBB: '🔊 LBBB', RBBB: '🔊 RBBB', PVC: '🔊 PVC', Other: '🔊 Other'
+            };
+            const defaultLabel = '🔊 Play Audio';
+            const btnId = btnMap[which];
+            const btns = btnId ? [...document.querySelectorAll(`[id^="${btnId}"]`)] : [];
+            if (audioPlaying[which]) {
+                audioPlaying[which].pause(); audioPlaying[which] = false;
+                btns.forEach(b => { b.textContent = labelMap[which] || defaultLabel; b.classList.remove('playing'); });
+                return;
+            }
+            btns.forEach(b => { b.textContent = '⏹ Stop'; b.classList.add('playing'); });
+            const audio = new Audio(`/api/audio?which=${which}&mode=${currentMode}&t=${Date.now()}`);
+            audioPlaying[which] = audio; audio.play();
+            audio.onended = () => { audioPlaying[which] = false; btns.forEach(b => { b.textContent = labelMap[which] || defaultLabel; b.classList.remove('playing'); }); };
+        }
+
+        // ── Settings ──────────────────────────────────────────────────────────
+        function loadSettingsFile(event) {
+            const file = event.target.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                try {
+                    const s = JSON.parse(e.target.result);
+                    if (s.freqSliders) MODES[currentMode].freqSliders = s.freqSliders;
+                    if (s.wavSliders) MODES[currentMode].wavSliders = s.wavSliders;
+                    buildSliders(); if (signalData) { applyFreqEqualization(); if (currentMode !== 'generic') applyWaveletEqualization(); }
+                } catch (err) { alert('Invalid settings file: ' + err.message); }
+            };
+            reader.readAsText(file); event.target.value = '';
+        }
+        function saveSettings() {
+            const mode = MODES[currentMode];
+            const toSave = {
+                mode: currentMode, optimalWavelet: mode.optimalWavelet,
+                freqSliders: mode.freqSliders.map((s, i) => ({ ...s, current_gain: freqGains[i] })),
+                wavSliders: mode.wavSliders.map((s, i) => ({ ...s, current_gain: wavGains[i] }))
+            };
+            const blob = new Blob([JSON.stringify(toSave, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob), a = document.createElement('a');
+            a.href = url; a.download = `${currentMode}_settings.json`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        }
+
+        // ── Init ──────────────────────────────────────────────────────────────
+        (function init() {
+            document.getElementById('waveletBadge').textContent = MODES[currentMode].optimalWavelet;
+            buildSliders();
+        })();
+    </script>
+</body>
+
+</html>
