@@ -23,7 +23,7 @@ A dual-domain signal equalizer with AI-powered source separation, built with Fla
 ## 📸 Screenshots
 
 ![Dashboard](screenshots/dashboard.png)
-*Main dashboard with signal loaded and waveform displayed*
+*Main dashboard*
 --
 
 ![Spectrogram](screenshots/spectrogram.png)
