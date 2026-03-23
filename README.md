@@ -34,6 +34,9 @@ A dual-domain signal equalizer with AI-powered source separation, built with Fla
 ![Before After](screenshots/before_after.png)
 *Before/after comparison — input vs. denoised output*
 
+![Fourier & Wavelet Transformation](screenshots/Equalizer.png)
+*Frequency and Wavelet Domain Equalizers*
+
 ---
 
 ## 🖥️ Tech Stack
