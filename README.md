@@ -28,13 +28,15 @@ A dual-domain signal equalizer with AI-powered source separation, built with Fla
 
 ![Spectrogram](screenshots/spectrogram.png)
 *FFT spectrum, spectrogram and scalogram view*
----
+--
 
 ![Stem Mixer](screenshots/stem_mixer.png)
 *AI stem separation panel with per-stem gain sliders*
+--
 
 ![Before After](screenshots/before_after.png)
 *Before/after comparison — input vs. denoised output*
+--
 
 ![Fourier & Wavelet Transformation](screenshots/Equalizer.png)
 *Frequency and Wavelet Domain Equalizers*
