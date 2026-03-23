@@ -40,7 +40,7 @@ A dual-domain signal equalizer with AI-powered source separation, built with Fla
 
 ![Fourier & Wavelet Transformation](screenshots/Equalizer.png)
 *Frequency and Wavelet Domain Equalizers*
-
+-
 ---
 
 ## 🖥️ Tech Stack
