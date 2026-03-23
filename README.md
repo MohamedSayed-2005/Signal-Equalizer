@@ -24,9 +24,11 @@ A dual-domain signal equalizer with AI-powered source separation, built with Fla
 
 ![Dashboard](screenshots/dashboard.png)
 *Main dashboard with signal loaded and waveform displayed*
+--
 
 ![Spectrogram](screenshots/spectrogram.png)
 *FFT spectrum, spectrogram and scalogram view*
+---
 
 ![Stem Mixer](screenshots/stem_mixer.png)
 *AI stem separation panel with per-stem gain sliders*
